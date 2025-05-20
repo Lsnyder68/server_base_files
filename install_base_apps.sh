@@ -80,6 +80,7 @@ if [ "$PKG_MANAGER" = "apt" ]; then
         "zoxide"
         "duf"
         "tree"
+        "neomutt"
     )
 else
     apps=(
@@ -93,6 +94,7 @@ else
         "zoxide"
         "duf"
         "tree"
+        "neomutt"
     )
 fi
 
