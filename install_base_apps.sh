@@ -76,7 +76,6 @@ if [ "$PKG_MANAGER" = "apt" ]; then
         "wget"
         "htop"
         "tmux"
-        "nala"
         "fd-find"
         "zoxide"
         "duf"
@@ -142,6 +141,28 @@ else
         failed_apps+=("mcfly")
         failed_reasons+=("$(cat /tmp/install_error.log | head -n 1)")
         echo "✗ Failed to install mcfly"
+    fi
+fi
+
+# Install nala manually for apt systems
+if [ "$PKG_MANAGER" = "apt" ]; then
+    echo "Checking nala installation..."
+    if is_installed "nala"; then
+        echo "✓ nala is already installed"
+        already_installed+=("nala")
+    else
+        echo "Installing nala..."
+        if (echo "deb [arch=amd64,arm64,armhf] http://deb.volian.org/volian/ scar main" | sudo tee /etc/apt/sources.list.d/volian-archive-scar-unstable.list > /dev/null && \
+            wget -qO - https://deb.volian.org/volian/scar.key | sudo tee /etc/apt/trusted.gpg.d/volian-archive-scar-unstable.gpg > /dev/null && \
+            apt-get update && \
+            DEBIAN_FRONTEND=noninteractive apt-get install -y nala) > /dev/null 2> /tmp/install_error.log; then
+            newly_installed+=("nala")
+            echo "✓ Successfully installed nala"
+        else
+            failed_apps+=("nala")
+            failed_reasons+=("$(cat /tmp/install_error.log | head -n 1)")
+            echo "✗ Failed to install nala"
+        fi
     fi
 fi
 
