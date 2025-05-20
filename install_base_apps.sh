@@ -5,9 +5,28 @@ declare -a installed_apps=()
 declare -a failed_apps=()
 declare -a failed_reasons=()
 
+# Function to check if an application is already installed
+is_installed() {
+    local app_name=$1
+    if command -v "$app_name" >/dev/null 2>&1; then
+        return 0
+    elif dpkg -l | grep -q "^ii.*$app_name "; then
+        return 0
+    else
+        return 1
+    fi
+}
+
 # Function to install an application and track its status
 install_app() {
     local app_name=$1
+    
+    if is_installed "$app_name"; then
+        echo "✓ $app_name is already installed"
+        installed_apps+=("$app_name")
+        return
+    fi
+    
     echo "Installing $app_name..."
     
     # Try to install the package
@@ -66,8 +85,13 @@ else
 fi
 
 # Install mcfly manually
-echo "Installing mcfly..."
-if curl -LSfs https://raw.githubusercontent.com/cantino/mcfly/master/ci/install.sh | sh -s -- --git cantino/mcfly > /dev/null 2> /tmp/install_error.log; then
+echo "Checking mcfly installation..."
+if is_installed "mcfly"; then
+    echo "✓ mcfly is already installed"
+    installed_apps+=("mcfly")
+else
+    echo "Installing mcfly..."
+    if curl -LSfs https://raw.githubusercontent.com/cantino/mcfly/master/ci/install.sh | sh -s -- --git cantino/mcfly > /dev/null 2> /tmp/install_error.log; then
     installed_apps+=("mcfly")
     echo "✓ Successfully installed mcfly"
 else
