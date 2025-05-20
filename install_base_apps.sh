@@ -144,15 +144,23 @@ else
             curl -s https://azlux.fr/repo.gpg.key | gpg --dearmor | sudo tee /usr/share/keyrings/azlux.gpg > /dev/null && \
             apt-get update && \
             DEBIAN_FRONTEND=noninteractive apt-get install -y gping) > /dev/null 2> /tmp/install_error.log; then
+            newly_installed+=("gping")
+            echo "✓ Successfully installed gping"
+        else
+            failed_apps+=("gping")
+            failed_reasons+=("$(cat /tmp/install_error.log | head -n 1)")
+            echo "✗ Failed to install gping"
+        fi
     else
         # Install gping for Alpine
         if apk add gping > /dev/null 2> /tmp/install_error.log; then
-        newly_installed+=("gping")
-        echo "✓ Successfully installed gping"
-    else
-        failed_apps+=("gping")
-        failed_reasons+=("$(cat /tmp/install_error.log | head -n 1)")
-        echo "✗ Failed to install gping"
+            newly_installed+=("gping")
+            echo "✓ Successfully installed gping"
+        else
+            failed_apps+=("gping")
+            failed_reasons+=("$(cat /tmp/install_error.log | head -n 1)")
+            echo "✗ Failed to install gping"
+        fi
     fi
 fi
 
