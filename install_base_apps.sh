@@ -37,7 +37,6 @@ apps=(
     "fd-find"
     "zoxide"
     "duf"
-    "mcfly"
     "tree"
     "gping"    
 )
@@ -64,6 +63,17 @@ else
     for i in "${!failed_apps[@]}"; do
         echo "✗ ${failed_apps[$i]}: ${failed_reasons[$i]}"
     done
+fi
+
+# Install mcfly manually
+echo "Installing mcfly..."
+if curl -LSfs https://raw.githubusercontent.com/cantino/mcfly/master/ci/install.sh | sh -s -- --git cantino/mcfly > /dev/null 2> /tmp/install_error.log; then
+    installed_apps+=("mcfly")
+    echo "✓ Successfully installed mcfly"
+else
+    failed_apps+=("mcfly")
+    failed_reasons+=("$(cat /tmp/install_error.log | head -n 1)")
+    echo "✗ Failed to install mcfly"
 fi
 
 # Cleanup
