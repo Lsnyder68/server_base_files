@@ -68,19 +68,34 @@ else
 fi
 
 # List of applications to install
-apps=(
-    "nano"
-    "git"
-    "curl"
-    "wget"
-    "htop"
-    "tmux"
-    "nala"
-    "fd-find"
-    "zoxide"
-    "duf"
-    "tree"
-)
+if [ "$PKG_MANAGER" = "apt" ]; then
+    apps=(
+        "nano"
+        "git"
+        "curl"
+        "wget"
+        "htop"
+        "tmux"
+        "nala"
+        "fd-find"
+        "zoxide"
+        "duf"
+        "tree"
+    )
+else
+    apps=(
+        "nano"
+        "git"
+        "curl"
+        "wget"
+        "htop"
+        "tmux"
+        "fd"
+        "zoxide"
+        "duf"
+        "tree"
+    )
+fi
 
 # Install each application
 for app in "${apps[@]}"; do
