@@ -6,12 +6,24 @@ declare -a newly_installed=()
 declare -a failed_apps=()
 declare -a failed_reasons=()
 
+# Detect package manager
+if command -v apt-get >/dev/null 2>&1; then
+    PKG_MANAGER="apt"
+elif command -v apk >/dev/null 2>&1; then
+    PKG_MANAGER="apk"
+else
+    echo "Error: Neither apt nor apk package manager found"
+    exit 1
+fi
+
 # Function to check if an application is already installed
 is_installed() {
     local app_name=$1
     if command -v "$app_name" >/dev/null 2>&1; then
         return 0
-    elif dpkg -l | grep -q "^ii.*$app_name "; then
+    elif [ "$PKG_MANAGER" = "apt" ] && dpkg -l | grep -q "^ii.*$app_name "; then
+        return 0
+    elif [ "$PKG_MANAGER" = "apk" ] && apk info -e "$app_name" >/dev/null 2>&1; then
         return 0
     else
         return 1
@@ -31,7 +43,13 @@ install_app() {
     echo "Installing $app_name..."
     
     # Try to install the package
-    if DEBIAN_FRONTEND=noninteractive apt-get install -y "$app_name" > /dev/null 2> /tmp/install_error.log; then
+    if [ "$PKG_MANAGER" = "apt" ]; then
+        DEBIAN_FRONTEND=noninteractive apt-get install -y "$app_name" > /dev/null 2> /tmp/install_error.log
+    else
+        apk add "$app_name" > /dev/null 2> /tmp/install_error.log
+    fi
+    
+    if [ $? -eq 0 ]; then
         newly_installed+=("$app_name")
         echo "✓ Successfully installed $app_name"
     else
@@ -43,7 +61,11 @@ install_app() {
 
 # Update package lists
 echo "Updating package lists..."
-apt-get update
+if [ "$PKG_MANAGER" = "apt" ]; then
+    apt-get update
+else
+    apk update
+fi
 
 # List of applications to install
 apps=(
@@ -115,11 +137,16 @@ if is_installed "gping"; then
     already_installed+=("gping")
 else
     echo "Installing gping..."
-    if (echo 'deb [signed-by=/usr/share/keyrings/azlux.gpg] https://packages.azlux.fr/debian/ bookworm main' | sudo tee /etc/apt/sources.list.d/azlux.list && \
-        DEBIAN_FRONTEND=noninteractive apt-get install -y gpg && \
-        curl -s https://azlux.fr/repo.gpg.key | gpg --dearmor | sudo tee /usr/share/keyrings/azlux.gpg > /dev/null && \
-        apt-get update && \
-        DEBIAN_FRONTEND=noninteractive apt-get install -y gping) > /dev/null 2> /tmp/install_error.log; then
+    if [ "$PKG_MANAGER" = "apt" ]; then
+        # Install gping for Debian/Ubuntu
+        if (echo 'deb [signed-by=/usr/share/keyrings/azlux.gpg] https://packages.azlux.fr/debian/ bookworm main' | sudo tee /etc/apt/sources.list.d/azlux.list && \
+            DEBIAN_FRONTEND=noninteractive apt-get install -y gpg && \
+            curl -s https://azlux.fr/repo.gpg.key | gpg --dearmor | sudo tee /usr/share/keyrings/azlux.gpg > /dev/null && \
+            apt-get update && \
+            DEBIAN_FRONTEND=noninteractive apt-get install -y gping) > /dev/null 2> /tmp/install_error.log; then
+    else
+        # Install gping for Alpine
+        if apk add gping > /dev/null 2> /tmp/install_error.log; then
         newly_installed+=("gping")
         echo "✓ Successfully installed gping"
     else
