@@ -1,7 +1,8 @@
 #!/bin/bash
 
 # Arrays to store installation results
-declare -a installed_apps=()
+declare -a already_installed=()
+declare -a newly_installed=()
 declare -a failed_apps=()
 declare -a failed_reasons=()
 
@@ -23,7 +24,7 @@ install_app() {
     
     if is_installed "$app_name"; then
         echo "✓ $app_name is already installed"
-        installed_apps+=("$app_name")
+        already_installed+=("$app_name")
         return
     fi
     
@@ -31,7 +32,7 @@ install_app() {
     
     # Try to install the package
     if DEBIAN_FRONTEND=noninteractive apt-get install -y "$app_name" > /dev/null 2> /tmp/install_error.log; then
-        installed_apps+=("$app_name")
+        newly_installed+=("$app_name")
         echo "✓ Successfully installed $app_name"
     else
         failed_apps+=("$app_name")
@@ -67,11 +68,18 @@ done
 # Print installation summary
 echo -e "\n=== Installation Summary ===\n"
 
-echo "Successfully installed applications:"
-if [ ${#installed_apps[@]} -eq 0 ]; then
+echo "Already installed applications:"
+if [ ${#already_installed[@]} -eq 0 ]; then
     echo "None"
 else
-    printf '%s\n' "${installed_apps[@]}" | sed 's/^/✓ /'
+    printf '%s\n' "${already_installed[@]}" | sed 's/^/✓ /'
+fi
+
+echo -e "\nNewly installed applications:"
+if [ ${#newly_installed[@]} -eq 0 ]; then
+    echo "None"
+else
+    printf '%s\n' "${newly_installed[@]}" | sed 's/^/✓ /'
 fi
 
 echo -e "\nFailed installations:"
@@ -87,11 +95,11 @@ fi
 echo "Checking mcfly installation..."
 if is_installed "mcfly"; then
     echo "✓ mcfly is already installed"
-    installed_apps+=("mcfly")
+    already_installed+=("mcfly")
 else
     echo "Installing mcfly..."
     if curl -LSfs https://raw.githubusercontent.com/cantino/mcfly/master/ci/install.sh | sh -s -- --git cantino/mcfly > /dev/null 2> /tmp/install_error.log; then
-        installed_apps+=("mcfly")
+        newly_installed+=("mcfly")
         echo "✓ Successfully installed mcfly"
     else
         failed_apps+=("mcfly")
@@ -104,7 +112,7 @@ fi
 echo "Checking gping installation..."
 if is_installed "gping"; then
     echo "✓ gping is already installed"
-    installed_apps+=("gping")
+    already_installed+=("gping")
 else
     echo "Installing gping..."
     if (echo 'deb [signed-by=/usr/share/keyrings/azlux.gpg] https://packages.azlux.fr/debian/ bookworm main' | sudo tee /etc/apt/sources.list.d/azlux.list && \
@@ -112,7 +120,7 @@ else
         curl -s https://azlux.fr/repo.gpg.key | gpg --dearmor | sudo tee /usr/share/keyrings/azlux.gpg > /dev/null && \
         apt-get update && \
         DEBIAN_FRONTEND=noninteractive apt-get install -y gping) > /dev/null 2> /tmp/install_error.log; then
-        installed_apps+=("gping")
+        newly_installed+=("gping")
         echo "✓ Successfully installed gping"
     else
         failed_apps+=("gping")
