@@ -57,7 +57,6 @@ apps=(
     "zoxide"
     "duf"
     "tree"
-    "gping"    
 )
 
 # Install each application
@@ -98,6 +97,27 @@ else
         failed_apps+=("mcfly")
         failed_reasons+=("$(cat /tmp/install_error.log | head -n 1)")
         echo "✗ Failed to install mcfly"
+    fi
+fi
+
+# Install gping manually
+echo "Checking gping installation..."
+if is_installed "gping"; then
+    echo "✓ gping is already installed"
+    installed_apps+=("gping")
+else
+    echo "Installing gping..."
+    if (echo 'deb [signed-by=/usr/share/keyrings/azlux.gpg] https://packages.azlux.fr/debian/ bookworm main' | sudo tee /etc/apt/sources.list.d/azlux.list && \
+        DEBIAN_FRONTEND=noninteractive apt-get install -y gpg && \
+        curl -s https://azlux.fr/repo.gpg.key | gpg --dearmor | sudo tee /usr/share/keyrings/azlux.gpg > /dev/null && \
+        apt-get update && \
+        DEBIAN_FRONTEND=noninteractive apt-get install -y gping) > /dev/null 2> /tmp/install_error.log; then
+        installed_apps+=("gping")
+        echo "✓ Successfully installed gping"
+    else
+        failed_apps+=("gping")
+        failed_reasons+=("$(cat /tmp/install_error.log | head -n 1)")
+        echo "✗ Failed to install gping"
     fi
 fi
 
