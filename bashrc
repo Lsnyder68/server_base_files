@@ -83,6 +83,7 @@ alias l='ls -CF'
 alias hs='history | grep'
 alias octal='stat --printf="%A\t%a\t%h\t%U\t%G\t%s\t%.19y\t%n\n" * | numfmt --to=iec-i --field=6 --delimiter='' --suffix=B'
 alias ld='stat -c "%a %n" *'
+alias bat='batcat'
 
 # Alias definitions.
 # You may want to put all your additions into a separate file like
