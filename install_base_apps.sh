@@ -81,6 +81,7 @@ if [ "$PKG_MANAGER" = "apt" ]; then
         "duf"
         "tree"
         "neomutt"
+        "bat"
     )
 else
     apps=(
@@ -95,6 +96,7 @@ else
         "duf"
         "tree"
         "neomutt"
+        "bat"
     )
 fi
 
