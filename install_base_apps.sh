@@ -9,6 +9,7 @@ declare -a failed_reasons=()
 # Detect package manager
 if command -v apt-get >/dev/null 2>&1; then
     PKG_MANAGER="apt"
+    SUDO="sudo"
 elif command -v apk >/dev/null 2>&1; then
     PKG_MANAGER="apk"
 else
@@ -16,6 +17,11 @@ else
     exit 1
 fi
 
+# Check for root privileges, as they are needed for installations
+if [ "$(id -u)" -ne 0 ]; then
+  echo "This script must be run as root. Please use sudo." >&2
+  exit 1
+fi
 # Function to check if an application is already installed
 is_installed() {
     local app_name=$1
@@ -30,6 +36,28 @@ is_installed() {
     fi
 }
 
+# Generic function to handle an installation command and report status
+handle_installation() {
+    local app_name="$1"
+    local install_command="$2"
+
+    echo "Installing $app_name..."
+    # Create a temporary file for stderr
+    local error_log
+    error_log=$(mktemp)
+
+    if eval "$install_command" > /dev/null 2> "$error_log"; then
+        newly_installed+=("$app_name")
+        echo "✓ Successfully installed $app_name"
+    else
+        failed_apps+=("$app_name")
+        failed_reasons+=("$(head -n 1 "$error_log")")
+        echo "✗ Failed to install $app_name"
+    fi
+    # Clean up the temp file
+    rm -f "$error_log"
+}
+
 # Function to install an application and track its status
 install_app() {
     local app_name=$1
@@ -40,22 +68,10 @@ install_app() {
         return
     fi
     
-    echo "Installing $app_name..."
-    
-    # Try to install the package
     if [ "$PKG_MANAGER" = "apt" ]; then
-        DEBIAN_FRONTEND=noninteractive apt-get install -y "$app_name" > /dev/null 2> /tmp/install_error.log
+        handle_installation "$app_name" "DEBIAN_FRONTEND=noninteractive apt-get install -y \"$app_name\""
     else
-        apk add "$app_name" > /dev/null 2> /tmp/install_error.log
-    fi
-    
-    if [ $? -eq 0 ]; then
-        newly_installed+=("$app_name")
-        echo "✓ Successfully installed $app_name"
-    else
-        failed_apps+=("$app_name")
-        failed_reasons+=("$(cat /tmp/install_error.log | head -n 1)")
-        echo "✗ Failed to install $app_name"
+        handle_installation "$app_name" "apk add \"$app_name\""
     fi
 }
 
@@ -137,15 +153,8 @@ if is_installed "mcfly"; then
     echo "✓ mcfly is already installed"
     already_installed+=("mcfly")
 else
-    echo "Installing mcfly..."
-    if curl -LSfs https://raw.githubusercontent.com/cantino/mcfly/master/ci/install.sh | sh -s -- --git cantino/mcfly > /dev/null 2> /tmp/install_error.log; then
-        newly_installed+=("mcfly")
-        echo "✓ Successfully installed mcfly"
-    else
-        failed_apps+=("mcfly")
-        failed_reasons+=("$(cat /tmp/install_error.log | head -n 1)")
-        echo "✗ Failed to install mcfly"
-    fi
+    install_cmd="curl -LSfs https://raw.githubusercontent.com/cantino/mcfly/master/ci/install.sh | sh -s -- --git cantino/mcfly"
+    handle_installation "mcfly" "$install_cmd"
 fi
 
 # Install nala manually for apt systems
@@ -155,18 +164,8 @@ if [ "$PKG_MANAGER" = "apt" ]; then
         echo "✓ nala is already installed"
         already_installed+=("nala")
     else
-        echo "Installing nala..."
-        if (echo "deb [arch=amd64,arm64,armhf] http://deb.volian.org/volian/ scar main" | sudo tee /etc/apt/sources.list.d/volian-archive-scar-unstable.list > /dev/null && \
-            wget -qO - https://deb.volian.org/volian/scar.key | sudo tee /etc/apt/trusted.gpg.d/volian-archive-scar-unstable.gpg > /dev/null && \
-            apt-get update && \
-            DEBIAN_FRONTEND=noninteractive apt-get install -y nala) > /dev/null 2> /tmp/install_error.log; then
-            newly_installed+=("nala")
-            echo "✓ Successfully installed nala"
-        else
-            failed_apps+=("nala")
-            failed_reasons+=("$(cat /tmp/install_error.log | head -n 1)")
-            echo "✗ Failed to install nala"
-        fi
+        install_cmd="(echo 'deb [arch=amd64,arm64,armhf] http://deb.volian.org/volian/ scar main' | tee /etc/apt/sources.list.d/volian-archive-scar-unstable.list && wget -qO - https://deb.volian.org/volian/scar.key | tee /etc/apt/trusted.gpg.d/volian-archive-scar-unstable.gpg && apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y nala)"
+        handle_installation "nala" "$install_cmd"
     fi
 fi
 
@@ -176,33 +175,10 @@ if is_installed "gping"; then
     echo "✓ gping is already installed"
     already_installed+=("gping")
 else
-    echo "Installing gping..."
     if [ "$PKG_MANAGER" = "apt" ]; then
-        # Install gping for Debian/Ubuntu
-        if (echo 'deb [signed-by=/usr/share/keyrings/azlux.gpg] https://packages.azlux.fr/debian/ bookworm main' | sudo tee /etc/apt/sources.list.d/azlux.list && \
-            DEBIAN_FRONTEND=noninteractive apt-get install -y gpg && \
-            curl -s https://azlux.fr/repo.gpg.key | gpg --dearmor | sudo tee /usr/share/keyrings/azlux.gpg > /dev/null && \
-            apt-get update && \
-            DEBIAN_FRONTEND=noninteractive apt-get install -y gping) > /dev/null 2> /tmp/install_error.log; then
-            newly_installed+=("gping")
-            echo "✓ Successfully installed gping"
-        else
-            failed_apps+=("gping")
-            failed_reasons+=("$(cat /tmp/install_error.log | head -n 1)")
-            echo "✗ Failed to install gping"
-        fi
+        install_cmd="(echo 'deb [signed-by=/usr/share/keyrings/azlux.gpg] https://packages.azlux.fr/debian/ bookworm main' | tee /etc/apt/sources.list.d/azlux.list && DEBIAN_FRONTEND=noninteractive apt-get install -y gpg && curl -s https://azlux.fr/repo.gpg.key | gpg --dearmor | tee /usr/share/keyrings/azlux.gpg > /dev/null && apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y gping)"
+        handle_installation "gping" "$install_cmd"
     else
-        # Install gping for Alpine
-        if apk add gping > /dev/null 2> /tmp/install_error.log; then
-            newly_installed+=("gping")
-            echo "✓ Successfully installed gping"
-        else
-            failed_apps+=("gping")
-            failed_reasons+=("$(cat /tmp/install_error.log | head -n 1)")
-            echo "✗ Failed to install gping"
-        fi
+        handle_installation "gping" "apk add gping"
     fi
 fi
-
-# Cleanup
-rm -f /tmp/install_error.log
