@@ -20,8 +20,8 @@ HISTCONTROL=ignoredups:ignorespace
 shopt -s histappend
 
 # for setting history length see HISTSIZE and HISTFILESIZE in bash(1)
-HISTSIZE=2000
-HISTFILESIZE=4000
+HISTSIZE=10000
+HISTFILESIZE=10000
 
 # check the window size after each command and, if necessary,
 # update the values of LINES and COLUMNS.
@@ -101,4 +101,4 @@ fi
 #    . /etc/bash_completio
 
 eval "$(mcfly init bash)"
-eval "$(zoxide init bash)"
+eval "$(zoxide init --cmd cd bash)"
