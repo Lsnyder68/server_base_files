@@ -101,4 +101,8 @@ fi
 #    . /etc/bash_completio
 
 eval "$(mcfly init bash)"
-eval "$(zoxide init --cmd cd bash)"
+
+#leaving this version which doesn't seem to work with all of my servers
+#eval "$(zoxide init --cmd cd bash)"
+
+eval "$(zoxide init bash)"
