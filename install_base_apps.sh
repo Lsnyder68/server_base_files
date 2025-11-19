@@ -10,10 +10,16 @@ declare -a failed_reasons=()
 if command -v apt-get >/dev/null 2>&1; then
     PKG_MANAGER="apt"
     SUDO="sudo"
+elif command -v dnf >/dev/null 2>&1; then
+    PKG_MANAGER="dnf"
+elif command -v pacman >/dev/null 2>&1; then
+    PKG_MANAGER="pacman"
+elif command -v zypper >/dev/null 2>&1; then
+    PKG_MANAGER="zypper"
 elif command -v apk >/dev/null 2>&1; then
     PKG_MANAGER="apk"
 else
-    echo "Error: Neither apt nor apk package manager found"
+    echo "Error: No supported package manager found (apt, dnf, pacman, zypper, apk)"
     exit 1
 fi
 
@@ -22,12 +28,19 @@ if [ "$(id -u)" -ne 0 ]; then
   echo "This script must be run as root. Please use sudo." >&2
   exit 1
 fi
+
 # Function to check if an application is already installed
 is_installed() {
     local app_name=$1
     if command -v "$app_name" >/dev/null 2>&1; then
         return 0
     elif [ "$PKG_MANAGER" = "apt" ] && dpkg -l | grep -q "^ii.*$app_name "; then
+        return 0
+    elif [ "$PKG_MANAGER" = "dnf" ] && dnf list installed "$app_name" >/dev/null 2>&1; then
+        return 0
+    elif [ "$PKG_MANAGER" = "pacman" ] && pacman -Qi "$app_name" >/dev/null 2>&1; then
+        return 0
+    elif [ "$PKG_MANAGER" = "zypper" ] && zypper search -i --match-exact "$app_name" >/dev/null 2>&1; then
         return 0
     elif [ "$PKG_MANAGER" = "apk" ] && apk info -e "$app_name" >/dev/null 2>&1; then
         return 0
@@ -70,6 +83,12 @@ install_app() {
     
     if [ "$PKG_MANAGER" = "apt" ]; then
         handle_installation "$app_name" "DEBIAN_FRONTEND=noninteractive apt-get install -y \"$app_name\""
+    elif [ "$PKG_MANAGER" = "dnf" ]; then
+        handle_installation "$app_name" "dnf install -y \"$app_name\""
+    elif [ "$PKG_MANAGER" = "pacman" ]; then
+        handle_installation "$app_name" "pacman -S --noconfirm \"$app_name\""
+    elif [ "$PKG_MANAGER" = "zypper" ]; then
+        handle_installation "$app_name" "zypper install -y \"$app_name\""
     else
         handle_installation "$app_name" "apk add \"$app_name\""
     fi
@@ -79,6 +98,12 @@ install_app() {
 echo "Updating package lists..."
 if [ "$PKG_MANAGER" = "apt" ]; then
     apt-get update
+elif [ "$PKG_MANAGER" = "dnf" ]; then
+    dnf check-update
+elif [ "$PKG_MANAGER" = "pacman" ]; then
+    pacman -Sy
+elif [ "$PKG_MANAGER" = "zypper" ]; then
+    zypper refresh
 else
     apk update
 fi
@@ -93,6 +118,51 @@ if [ "$PKG_MANAGER" = "apt" ]; then
         "htop"
         "tmux"
         "fd-find"
+        "zoxide"
+        "duf"
+        "tree"
+        "neomutt"
+        "bat"
+    )
+elif [ "$PKG_MANAGER" = "dnf" ]; then
+    apps=(
+        "nano"
+        "git"
+        "curl"
+        "wget"
+        "htop"
+        "tmux"
+        "fd-find"
+        "zoxide"
+        "duf"
+        "tree"
+        "neomutt"
+        "bat"
+    )
+elif [ "$PKG_MANAGER" = "pacman" ]; then
+    apps=(
+        "nano"
+        "git"
+        "curl"
+        "wget"
+        "htop"
+        "tmux"
+        "fd"
+        "zoxide"
+        "duf"
+        "tree"
+        "neomutt"
+        "bat"
+    )
+elif [ "$PKG_MANAGER" = "zypper" ]; then
+    apps=(
+        "nano"
+        "git"
+        "curl"
+        "wget"
+        "htop"
+        "tmux"
+        "fd"
         "zoxide"
         "duf"
         "tree"
@@ -178,7 +248,13 @@ else
     if [ "$PKG_MANAGER" = "apt" ]; then
         install_cmd="(echo 'deb [signed-by=/usr/share/keyrings/azlux.gpg] https://packages.azlux.fr/debian/ bookworm main' | tee /etc/apt/sources.list.d/azlux.list && DEBIAN_FRONTEND=noninteractive apt-get install -y gpg && curl -s https://azlux.fr/repo.gpg.key | gpg --dearmor | tee /usr/share/keyrings/azlux.gpg > /dev/null && apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y gping)"
         handle_installation "gping" "$install_cmd"
-    else
+    elif [ "$PKG_MANAGER" = "apk" ]; then
         handle_installation "gping" "apk add gping"
+    elif [ "$PKG_MANAGER" = "dnf" ]; then
+        handle_installation "gping" "dnf install -y gping"
+    elif [ "$PKG_MANAGER" = "pacman" ]; then
+        handle_installation "gping" "pacman -S --noconfirm gping"
+    elif [ "$PKG_MANAGER" = "zypper" ]; then
+        handle_installation "gping" "zypper install -y gping"
     fi
 fi
