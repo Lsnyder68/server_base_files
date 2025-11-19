@@ -58,7 +58,18 @@ This bash script is designed to automate the installation of a set of base appli
 | **nala** | Frontend for `apt` | Manual (Repo Add + Apt) |
 | **gping** | Ping with a graph | Manual (Repo Add + Apt) / Package Manager |
 
+## Features
+
+### Dry Run Mode
+Run the script with `--dry-run` to simulate the installation process without making any changes to the system. This is useful for verifying what will be installed.
+```bash
+sudo ./install_base_apps.sh --dry-run
+```
+
+### Logging
+The script logs all actions to `/var/log/install_base_apps_YYYY-MM-DD.log`. This provides a persistent record of installations and failures for auditing and debugging.
+
 ## Error Handling
-- The script captures standard error output for failed installations.
-- It does not stop on individual package failures but continues to try installing others.
-- A summary of failures and their reasons is displayed at the end.
+- **Network Check**: The script checks for internet connectivity at startup and exits early if offline.
+- **Cleanup**: Temporary files are automatically cleaned up upon script exit or interruption.
+- **Robustness**: The script captures standard error output for failed installations and provides a summary at the end. It does not stop on individual package failures.
