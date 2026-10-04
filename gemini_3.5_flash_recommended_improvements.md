@@ -1,6 +1,6 @@
 # Recommended Improvements for Server Base Files
 
-This document compiles the recommendations and potential improvements identified during the code assessment of [install_base_apps.sh](file:///c:/dev/server_base_files/install_base_apps.sh) and [bashrc](file:///c:/dev/server_base_files/bashrc).
+This document compiles the recommendations and potential improvements identified during the code assessment of [install_base_apps.sh](install_base_apps.sh) and [bashrc](bashrc).
 
 ---
 

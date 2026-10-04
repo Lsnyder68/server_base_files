@@ -77,13 +77,28 @@ if [ -x /usr/bin/dircolors ]; then
 fi
 
 # some more ls aliases
-alias ll='ls -alFh'
-alias la='ls -Ah'
-alias l='ls -CF'
+# Commented out: these used the `ls` alias, which now points at `eza`
+# alias ll='ls -alFh'
+# alias la='ls -Ah'
+# alias l='ls -CF'
 alias hs='history | grep'
 alias octal='stat --printf="%A\t%a\t%h\t%U\t%G\t%s\t%.19y\t%n\n" * | numfmt --to=iec-i --field=6 --delimiter='' --suffix=B'
 alias ld='stat -c "%a %n" *'
-alias bat='batcat'
+
+# Modern replacements, guarded so shells without the tools don't break.
+# Debian/Ubuntu name the binaries batcat/fdfind; other distros use bat/fd.
+if command -v batcat >/dev/null 2>&1; then
+    alias bat='batcat'
+fi
+
+if command -v fdfind >/dev/null 2>&1; then
+    alias fd='fdfind'
+fi
+
+# Prefer eza for ls when available; otherwise the colorized `ls` alias above stands.
+if command -v eza >/dev/null 2>&1; then
+    alias ls='eza -a --long --group-directories-first --octal-permissions --git'
+fi
 
 # Alias definitions.
 # You may want to put all your additions into a separate file like
@@ -100,9 +115,15 @@ fi
 #if [ -f /etc/bash_completion ] && ! shopt -oq posix; then
 #    . /etc/bash_completio
 
-eval "$(mcfly init bash)"
+# Initialize McFly if installed
+if command -v mcfly >/dev/null 2>&1; then
+    eval "$(mcfly init bash)"
+fi
 
 #leaving this version which doesn't seem to work with all of my servers
 #eval "$(zoxide init --cmd cd bash)"
 
-eval "$(zoxide init bash)"
+# Initialize Zoxide if installed
+if command -v zoxide >/dev/null 2>&1; then
+    eval "$(zoxide init bash)"
+fi

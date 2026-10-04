@@ -4,7 +4,8 @@
 LOG_FILE="/var/log/install_base_apps_$(date +%F).log"
 DRY_RUN=false
 PKG_MANAGER=""
-SUDO=""
+# Pin the mcfly release instead of piping an unpinned script from master
+MCFLY_VERSION="v0.9.4"
 
 # Arrays to store installation results
 declare -a already_installed=()
@@ -32,7 +33,11 @@ trap cleanup EXIT
 
 check_connectivity() {
     log "Checking network connectivity..."
-    if ! ping -c 1 google.com >/dev/null 2>&1; then
+    # Prefer HTTP(S) probes: many environments block ICMP while package
+    # fetching over HTTP/HTTPS works fine.
+    if ! curl -fsSI --max-time 10 https://www.google.com >/dev/null 2>&1 \
+        && ! wget -q --spider --timeout=10 https://www.google.com >/dev/null 2>&1 \
+        && ! ping -c 1 -W 3 google.com >/dev/null 2>&1; then
         echo "Error: No internet connectivity." >&2
         exit 1
     fi
@@ -41,7 +46,6 @@ check_connectivity() {
 detect_package_manager() {
     if command -v apt-get >/dev/null 2>&1; then
         PKG_MANAGER="apt"
-        SUDO="sudo"
     elif command -v dnf >/dev/null 2>&1; then
         PKG_MANAGER="dnf"
     elif command -v pacman >/dev/null 2>&1; then
@@ -144,7 +148,7 @@ update_package_lists() {
     case "$PKG_MANAGER" in
         apt) apt-get update ;;
         dnf) dnf check-update ;;
-        pacman) pacman -Sy ;;
+        pacman) pacman -Syu --noconfirm ;;
         zypper) zypper refresh ;;
         apk) apk update ;;
     esac
@@ -165,7 +169,7 @@ install_mcfly() {
          return
     fi
     
-    local install_cmd="curl -LSfs https://raw.githubusercontent.com/cantino/mcfly/master/ci/install.sh | sh -s -- --git cantino/mcfly"
+    local install_cmd="curl -LSfs https://raw.githubusercontent.com/cantino/mcfly/$MCFLY_VERSION/ci/install.sh | sh -s -- --git cantino/mcfly --tag $MCFLY_VERSION"
     
     # handle_installation expects an array/command. Since this is a pipeline, we run it via sh -c
     handle_installation "mcfly" sh -c "$install_cmd"
@@ -181,8 +185,25 @@ install_nala() {
         return
     fi
 
-    local install_cmd="(echo 'deb [arch=amd64,arm64,armhf] http://deb.volian.org/volian/ scar main' | tee /etc/apt/sources.list.d/volian-archive-scar-unstable.list && wget -qO - https://deb.volian.org/volian/scar.key | tee /etc/apt/trusted.gpg.d/volian-archive-scar-unstable.gpg && apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y nala)"
-    
+    if [ "$DRY_RUN" = true ]; then
+        echo "[DRY RUN] Would attempt direct install of nala, falling back to the Volian repository if unavailable"
+        newly_installed+=("nala (dry-run)")
+        return
+    fi
+
+    # Modern Debian/Ubuntu ship nala in the standard repositories; try that first.
+    if DEBIAN_FRONTEND=noninteractive apt-get install -y nala >/dev/null 2>&1; then
+        newly_installed+=("nala")
+        log "✓ Successfully installed nala from official repositories"
+        return
+    fi
+
+    # Fall back to the Volian scar repository using a modern signed-by keyring.
+    log "nala not in default repositories. Adding the Volian scar repository..."
+    local install_cmd="(curl -fsSL https://deb.volian.org/volian/scar.key | gpg --dearmor | tee /usr/share/keyrings/volian-archive-scar-unstable.gpg > /dev/null && \
+    echo 'deb [signed-by=/usr/share/keyrings/volian-archive-scar-unstable.gpg] http://deb.volian.org/volian/ scar main' | tee /etc/apt/sources.list.d/volian-archive-scar-unstable.list && \
+    apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y nala)"
+
     handle_installation "nala" sh -c "$install_cmd"
 }
 
@@ -195,7 +216,25 @@ install_gping() {
     fi
 
     if [ "$PKG_MANAGER" = "apt" ]; then
-        local install_cmd="(echo 'deb [signed-by=/usr/share/keyrings/azlux.gpg] https://packages.azlux.fr/debian/ bookworm main' | tee /etc/apt/sources.list.d/azlux.list && DEBIAN_FRONTEND=noninteractive apt-get install -y gpg && curl -s https://azlux.fr/repo.gpg.key | gpg --dearmor | tee /usr/share/keyrings/azlux.gpg > /dev/null && apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y gping)"
+        if [ "$DRY_RUN" = true ]; then
+            echo "[DRY RUN] Would add the Azlux repository and install gping"
+            newly_installed+=("gping (dry-run)")
+            return
+        fi
+
+        # Detect the Debian/Ubuntu codename for the Azlux repository instead of
+        # hardcoding one that only works on a single release.
+        local codename=""
+        if command -v lsb_release >/dev/null 2>&1; then
+            codename=$(lsb_release -cs 2>/dev/null)
+        fi
+        if [ -z "$codename" ] && [ -r /etc/os-release ]; then
+            codename=$(. /etc/os-release && echo "$VERSION_CODENAME")
+        fi
+        # Fall back to a sane default if detection fails.
+        [ -z "$codename" ] && codename="bookworm"
+
+        local install_cmd="(DEBIAN_FRONTEND=noninteractive apt-get install -y gpg && curl -fsSL https://azlux.fr/repo.gpg.key | gpg --dearmor | tee /usr/share/keyrings/azlux.gpg > /dev/null && echo 'deb [signed-by=/usr/share/keyrings/azlux.gpg] https://packages.azlux.fr/debian/ $codename main' | tee /etc/apt/sources.list.d/azlux.list && apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y gping)"
         handle_installation "gping" sh -c "$install_cmd"
     else
         # For others, it's just a package
@@ -244,10 +283,10 @@ update_package_lists
 # Define apps list based on manager
 case "$PKG_MANAGER" in
     apt|dnf)
-        apps=("nano" "git" "curl" "wget" "htop" "tmux" "fd-find" "zoxide" "duf" "tree" "neomutt" "bat")
+        apps=("nano" "git" "curl" "wget" "htop" "tmux" "fd-find" "zoxide" "duf" "tree" "neomutt" "bat" "eza")
         ;;
     *)
-        apps=("nano" "git" "curl" "wget" "htop" "tmux" "fd" "zoxide" "duf" "tree" "neomutt" "bat")
+        apps=("nano" "git" "curl" "wget" "htop" "tmux" "fd" "zoxide" "duf" "tree" "neomutt" "bat" "eza")
         ;;
 esac
 

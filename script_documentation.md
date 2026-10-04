@@ -20,17 +20,17 @@ This bash script is designed to automate the installation of a set of base appli
     - `install_app`: High-level function that checks if an app is installed and, if not, calls `handle_installation` with the appropriate command for the detected package manager.
 
 3.  **Package List Update**:
-    - Runs the appropriate update command: `apt-get update`, `dnf check-update`, `pacman -Sy`, `zypper refresh`, or `apk update`.
+    - Runs the appropriate update command: `apt-get update`, `dnf check-update`, `pacman -Syu --noconfirm`, `zypper refresh`, or `apk update`.
 
 4.  **Standard Application Installation**:
     - Iterates through a predefined list of applications and installs them using `install_app`.
-    - **Common Apps**: `nano`, `git`, `curl`, `wget`, `htop`, `tmux`, `zoxide`, `duf`, `tree`, `neomutt`, `bat`.
+    - **Common Apps**: `nano`, `git`, `curl`, `wget`, `htop`, `tmux`, `zoxide`, `duf`, `tree`, `neomutt`, `bat`, `eza`.
     - **Differences**: `fd-find` is used for `apt` and `dnf`, while `fd` is used for `pacman`, `zypper`, and `apk`.
 
 5.  **Manual Installations**:
-    - **mcfly**: Installs via a curl script from GitHub.
-    - **nala**: (Only for `apt` systems) Installs from the Volian repository.
-    - **gping**: Installs from the Azlux repository for `apt` systems, or via the package manager for others (`apk`, `dnf`, `pacman`, `zypper`).
+    - **mcfly**: Installs via a curl script from GitHub, pinned to a specific release tag (`MCFLY_VERSION`) so the install script and binary are both version-locked.
+    - **nala**: (Only for `apt` systems) Attempts a direct install from the standard repositories first, falling back to the Volian `scar` repository using a modern `signed-by` keyring.
+    - **gping**: Installs from the Azlux repository for `apt` systems (using the detected Debian/Ubuntu codename), or via the package manager for others (`apk`, `dnf`, `pacman`, `zypper`).
 
 6.  **Summary**:
     - Prints a detailed summary of:
@@ -54,8 +54,9 @@ This bash script is designed to automate the installation of a set of base appli
 | **tree** | Directory structure viewer | Package Manager |
 | **neomutt** | Command line mail reader | Package Manager |
 | **bat** | `cat` clone with syntax highlighting | Package Manager |
-| **mcfly** | Shell history search replacement | Manual (Shell Script) |
-| **nala** | Frontend for `apt` | Manual (Repo Add + Apt) |
+| **eza** | Modern replacement for `ls` | Package Manager |
+| **mcfly** | Shell history search replacement | Manual (Shell Script, pinned tag) |
+| **nala** | Frontend for `apt` | Manual (Direct install, Volian fallback) |
 | **gping** | Ping with a graph | Manual (Repo Add + Apt) / Package Manager |
 
 ## Features
@@ -70,6 +71,6 @@ sudo ./install_base_apps.sh --dry-run
 The script logs all actions to `/var/log/install_base_apps_YYYY-MM-DD.log`. This provides a persistent record of installations and failures for auditing and debugging.
 
 ## Error Handling
-- **Network Check**: The script checks for internet connectivity at startup and exits early if offline.
+- **Network Check**: The script checks for internet connectivity at startup via HTTPS (`curl`, then `wget`), falling back to `ping` for environments that block HTTP probes.
 - **Cleanup**: Temporary files are automatically cleaned up upon script exit or interruption.
 - **Robustness**: The script captures standard error output for failed installations and provides a summary at the end. It does not stop on individual package failures.
