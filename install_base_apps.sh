@@ -89,6 +89,16 @@ trap on_interrupt INT TERM
 # Run a command with a timeout when the timeout utility is available.
 # --kill-after guarantees that a stopped (SIGTSTP) or TERM-ignoring child
 # cannot hang the run forever.
+#
+# stdin is always /dev/null.  GNU timeout (without --foreground) puts itself
+# and its child in a new process group, which is NOT the terminal's foreground
+# process group.  apt-get's dpkg pty handling calls tcsetattr(STDIN_FILENO, ...)
+# in pkgDPkgPM::StopPtyMagic() after dpkg finishes; a background process group
+# that changes terminal attributes receives SIGTTOU and is stopped.  A stopped
+# process ignores the TERM that timeout sends, so the install looks hung even
+# though the package was already installed.  With stdin on /dev/null,
+# tcgetattr() fails and apt skips the terminal handling; maintainer-script
+# prompts also get EOF instead of blocking.
 run_with_timeout() {
     local seconds="$1"
     shift
@@ -96,12 +106,12 @@ run_with_timeout() {
         local help_text=""
         help_text=$(timeout --help 2>&1 || true)
         if [[ "$help_text" == *"--kill-after"* ]]; then
-            timeout --kill-after=30 "$seconds" "$@"
+            timeout --kill-after=30 "$seconds" "$@" </dev/null
         else
-            timeout "$seconds" "$@"
+            timeout "$seconds" "$@" </dev/null
         fi
     else
-        "$@"
+        "$@" </dev/null
     fi
 }
 
@@ -378,22 +388,22 @@ update_package_lists() {
     local rc=0
     case "$PKG_MANAGER" in
         apt)
-            DEBIAN_FRONTEND=noninteractive apt-get update || rc=$?
+            DEBIAN_FRONTEND=noninteractive apt-get update </dev/null || rc=$?
             ;;
         dnf)
-            dnf -q check-update || rc=$?
+            dnf -q check-update </dev/null || rc=$?
             # dnf returns 100 when updates are available; that is not an error.
             [ "$rc" -eq 100 ] && rc=0
             ;;
         pacman)
             # Only refresh metadata here. A full upgrade belongs to the user.
-            pacman -Sy --noconfirm || rc=$?
+            pacman -Sy --noconfirm </dev/null || rc=$?
             ;;
         zypper)
-            zypper --non-interactive refresh || rc=$?
+            zypper --non-interactive refresh </dev/null || rc=$?
             ;;
         apk)
-            apk update || rc=$?
+            apk update </dev/null || rc=$?
             ;;
     esac
 

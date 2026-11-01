@@ -133,6 +133,9 @@ The script logs all actions to `/var/log/install_base_apps_YYYY-MM-DD.log`. This
 ### Concurrent Runs
 A non-blocking `flock` lock (`/var/lock/install_base_apps.lock`) prevents two copies of the script from running at once. On `apt` systems an in-use `dpkg` lock is also detected and reported before any changes are made.
 
+### Timed Commands and Terminal Handling
+Installation commands run under `timeout --kill-after=30 900 ...` with stdin redirected from `/dev/null`. GNU `timeout` (without `--foreground`) moves itself and its child into a new process group that is *not* the terminal's foreground group. When `apt-get` finishes running `dpkg`, its pty cleanup calls `tcsetattr()` on stdin, which raises `SIGTTOU` for a background process group and stops it. A stopped process ignores the `TERM` that `timeout` sends, so the run appears to hang — while the package is actually installed — until the 30-second post-timeout `KILL` (or a manual `kill -9`). Redirecting stdin from `/dev/null` makes `tcgetattr()` fail, so `apt` skips that terminal handling and prompts cannot block. If a run ever does appear to hang, check with `ps -o pid,stat,wchan,cmd -p <pid>`: a `T` state means the process was stopped by job control, not by `dpkg`.
+
 ### Shell Configuration
 After printing the installation summary, the script offers to install the bundled `bashrc` as `~/.bashrc`. If an existing `~/.bashrc` is present, it is first backed up to `~/.bashrc_YYYYMMDD-HH:MM` (for example, `~/.bashrc_20261031-09:19`); if a backup with that name already exists, the seconds are appended. The newest five backups are kept and older ones are pruned.
 
