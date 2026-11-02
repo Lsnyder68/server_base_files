@@ -79,6 +79,9 @@ Makes no changes: no installs, no `.bashrc` backup, no log file writes.
 7.  **Shell Configuration**:
     - Optionally installs the bundled `bashrc` as `~/.bashrc` (see below).
 
+8.  **Command Cheatsheet**:
+    - Writes `~/command_cheatsheet.txt` for the invoking user, replacing any existing copy. See "Command Cheatsheet" below.
+
 ## Installed Applications
 
 | Application | Description | Installation Method |
@@ -124,7 +127,7 @@ The script logs all actions to `/var/log/install_base_apps_YYYY-MM-DD.log`. This
 
 ### Exit Status
 - `0` — every step succeeded.
-- `1` — any installation or package-list update failed, or the `.bashrc` step failed.
+- `1` — any installation or package-list update failed, or the `.bashrc` or cheatsheet step failed.
 - `2` — invalid arguments.
 - `130` — interrupted (`INT`/`TERM`).
 
@@ -143,10 +146,29 @@ The prompt defaults to **No**. It is skipped automatically when the script is ru
 
 The new file is written to a temporary file and renamed into place, so an interrupt cannot leave a truncated `.bashrc`. If `~/.bashrc` is a symlink (for example, a dotfiles repository), the link is preserved and its target is updated instead of replacing the link. After installation the file is sourced so its aliases and tool initializers apply to the current session; new shells pick it up automatically.
 
+### Command Cheatsheet
+At the very end of every run, the script writes `~/command_cheatsheet.txt` for the invoking user (`SUDO_USER` when run via `sudo`). The file is overwritten on each run, written atomically, and owned by that user with mode `644`. It is generated even when the `.bashrc` install is declined or skipped.
+
+The file has two sections:
+
+1. **Commands installed by this script** — all 16 packages with a one-sentence summary and one or two basic usage examples. Commands that are not present on the system are tagged `(not installed)`, and distro-specific binary names such as `batcat` / `fdfind` are noted.
+2. **Shell aliases** — the effective aliases from the bundled `bashrc`, evaluated in a subshell so conditional aliases (`bat`, `fd`, `ls`) appear only when their tools are installed. If evaluation fails, the script falls back to listing the `alias` lines statically and says so.
+
+The file contains ANSI color codes and is intended for the terminal:
+
+```bash
+cat ~/command_cheatsheet.txt
+less -R ~/command_cheatsheet.txt
+```
+
+Set `NO_COLOR=1` when running the script to generate a plain-text version without escape codes. Usage examples are curated in the script rather than parsed from man pages, so the output is deterministic and works offline.
+
+A failure to write the cheatsheet is reported on stderr and returns exit status `1`; `--ignore-failures` does not mask it.
+
 ## Error Handling
 - **Network Check**: Probes HTTPS via `curl`, then `wget`, then `ping`, and finally Bash's `/dev/tcp`. The check is advisory: execution continues with a warning, and only aborts if the package-list update also fails.
 - **Timeouts**: Downloads use a 60-second timeout and installation commands a 900-second timeout. When GNU `timeout` supports it, `--kill-after=30` force-kills a child that ignores `TERM` or is suspended, so a stalled or stopped process cannot hang the run indefinitely.
 - **Verification**: A zero exit code is not treated as success. Each install is confirmed with `is_installed`, which catches installers that exit cleanly without doing anything.
 - **Diagnostics**: Failure reasons include the first stderr line and exit code, plus a package-specific hint (for example, EPEL for `eza`/`neomutt`, or `fdfind` vs `fd`). The full captured stderr is appended to the log.
-- **Cleanup**: Temporary files are removed on exit or interruption (`INT`/`TERM`), and the interruption is recorded in the log. Third-party repository files created by a failed `nala` or `gping` setup are rolled back, and files that already existed are left untouched.
+- **Cleanup**: Temporary files and the temporary alias-evaluation home directory are removed on exit or interruption (`INT`/`TERM`), and the interruption is recorded in the log. Third-party repository files created by a failed `nala` or `gping` setup are rolled back, and files that already existed are left untouched.
 - **Robustness**: Strict mode (`set -u`, `set -o pipefail`) is enabled, and the script does not stop on individual package failures; it continues and summarizes them.

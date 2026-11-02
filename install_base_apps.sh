@@ -18,6 +18,48 @@ MCFLY_INSTALL_SHA256="${MCFLY_INSTALL_SHA256:-}"
 NETWORK_TIMEOUT=60
 INSTALL_TIMEOUT=900
 MAX_BASHRC_BACKUPS=5
+CHEATSHEET_FILE="command_cheatsheet.txt"
+
+# ANSI colors for the generated command cheatsheet. NO_COLOR disables them.
+if [ -n "${NO_COLOR:-}" ]; then
+    C_RESET=""
+    C_TITLE=""
+    C_SECTION=""
+    C_CMD=""
+    C_ALIAS=""
+    C_EXAMPLE=""
+    C_DIM=""
+else
+    C_RESET=$'\033[0m'
+    C_TITLE=$'\033[1;37;44m'   # bold white on blue
+    C_SECTION=$'\033[1;36m'    # bold cyan
+    C_CMD=$'\033[1;32m'        # bold green
+    C_ALIAS=$'\033[1;35m'      # bold magenta
+    C_EXAMPLE=$'\033[0;33m'    # yellow
+    C_DIM=$'\033[2;37m'        # dim
+fi
+
+# label|probe|summary|example1|example2
+# probe may list alternatives with "/" (e.g. the Debian batcat/fdfind names).
+# Fields are "|"-separated, so examples must not contain a pipe character.
+cheatsheet_entries=(
+    'nano|nano|A small and friendly text editor.|nano file.txt|nano -w file.txt'
+    'git|git|A distributed version control system.|git clone https://github.com/user/repo.git|git status'
+    'curl|curl|A command line tool for transferring data with URL syntax.|curl -O https://example.com/file.tar.gz|curl -fsSL https://example.com -o out.html'
+    'wget|wget|A non-interactive downloader for files from the web.|wget https://example.com/file.tar.gz|wget -c https://example.com/big.iso'
+    'htop|htop|An interactive process viewer for Unix systems.|htop|htop -u "$USER"'
+    'tmux|tmux|A terminal multiplexer for managing multiple sessions.|tmux new -s work|tmux attach -t work'
+    'fd|fd/fdfind|A simple, fast and user-friendly alternative to find.|fd pattern|fd -e py . src/'
+    'zoxide|zoxide|A smarter cd command that learns your habits.|z proj|zi'
+    'duf|duf|A disk usage and free space utility, a better df alternative.|duf|duf /home'
+    'tree|tree|A recursive directory listing rendered as an indented tree.|tree|tree -L 2 -d'
+    'neomutt|neomutt|A command line mail reader (MUA).|neomutt|neomutt -f ~/Mail/INBOX'
+    'bat|bat/batcat|A cat clone with syntax highlighting and Git integration.|bat file.txt|bat -p file.txt'
+    'eza|eza|A modern replacement for ls.|eza -l|eza --tree --level=2'
+    'mcfly|mcfly|A shell history search replacement that learns from your usage.|mcfly search|mcfly add "make test"'
+    'nala|nala|A friendlier frontend for APT with clearer output.|nala install pkg|nala update'
+    'gping|gping|Ping with a live graph.|gping google.com|gping 1.1.1.1 --interval 1'
+)
 
 # Arrays to store installation results
 declare -a already_installed=()
@@ -27,6 +69,7 @@ declare -a failed_reasons=()
 declare -a apps=()
 # Temporary files and repo files that should be removed on failure/exit
 declare -a TEMP_FILES=()
+declare -a TEMP_DIRS=()
 declare -a ROLLBACK_FILES=()
 
 # Helper Functions
@@ -72,6 +115,10 @@ cleanup() {
     for file in "${TEMP_FILES[@]:-}"; do
         [ -n "$file" ] || continue
         [ -f "$file" ] && rm -f "$file"
+    done
+    for file in "${TEMP_DIRS[@]:-}"; do
+        [ -n "$file" ] || continue
+        [ -d "$file" ] && rm -rf "$file"
     done
     rollback_created_files
 }
@@ -622,6 +669,17 @@ resolve_user_home() {
     printf '%s\n' "$home"
 }
 
+resolve_target_account() {
+    TARGET_USER=""
+    TARGET_HOME="${HOME:-}"
+    if [ -n "${SUDO_USER:-}" ] && [ "${SUDO_USER:-}" != "root" ]; then
+        TARGET_USER="$SUDO_USER"
+        TARGET_HOME=$(resolve_user_home "$SUDO_USER")
+    fi
+    [ -z "$TARGET_HOME" ] && TARGET_HOME="${HOME:-}"
+    [ -n "$TARGET_HOME" ] && [ -d "$TARGET_HOME" ]
+}
+
 prune_bashrc_backups() {
     local dir="$1"
     local base="$2"
@@ -646,18 +704,11 @@ install_bashrc() {
         return 0
     fi
 
-    # When run via sudo, configure the invoking user's account rather than root's.
-    local target_home="${HOME:-}" target_user=""
-    if [ -n "${SUDO_USER:-}" ] && [ "${SUDO_USER:-}" != "root" ]; then
-        target_user="$SUDO_USER"
-        target_home=$(resolve_user_home "$SUDO_USER")
-    fi
-    [ -z "$target_home" ] && target_home="${HOME:-}"
-
-    if [ -z "$target_home" ] || [ ! -d "$target_home" ]; then
+    if ! resolve_target_account; then
         echo "Error: could not determine a valid home directory for the target user." >&2
         return 1
     fi
+    local target_home="$TARGET_HOME" target_user="$TARGET_USER"
 
     local target_rc="$target_home/.bashrc"
     local write_target="$target_rc"
@@ -766,6 +817,152 @@ install_bashrc() {
     return 0
 }
 
+generate_cheatsheet() {
+    if ! resolve_target_account; then
+        echo "Error: could not determine a valid home directory for the target user." >&2
+        return 1
+    fi
+    local target_home="$TARGET_HOME" target_user="$TARGET_USER"
+    local cheatsheet_path="$target_home/$CHEATSHEET_FILE"
+
+    if [ "$DRY_RUN" = true ]; then
+        echo "[DRY RUN] Would write command cheatsheet to $cheatsheet_path"
+        return 0
+    fi
+
+    local script_dir bashrc_source
+    script_dir=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+    bashrc_source="$script_dir/bashrc"
+
+    # Evaluate aliases against an empty HOME so the bundled bashrc cannot
+    # source (and execute as root) the target user's ~/.bash_aliases.
+    local safe_home=""
+    if [ -f "$bashrc_source" ]; then
+        if safe_home=$(mktemp -d "${TMPDIR:-/tmp}/cheatsheet_home.XXXXXX"); then
+            TEMP_DIRS+=("$safe_home")
+        else
+            safe_home=""
+        fi
+    fi
+
+    local tmp=""
+    if ! tmp=$(mktemp "$target_home/.command_cheatsheet.XXXXXX"); then
+        echo "Error: could not create a temporary file in $target_home" >&2
+        return 1
+    fi
+    TEMP_FILES+=("$tmp")
+
+    local aliases="" alias_fallback=false
+    if [ -f "$bashrc_source" ] && [ -n "$safe_home" ]; then
+        aliases=$(HOME="$safe_home" bash --noprofile --norc -c \
+            'source "$1" >/dev/null 2>&1 || exit 1; alias' _ "$bashrc_source" 2>/dev/null || true)
+    fi
+    if [ -z "$aliases" ] && [ -f "$bashrc_source" ]; then
+        aliases=$(grep -E "^[[:space:]]*alias [A-Za-z0-9_]+=" "$bashrc_source" 2>/dev/null | sed -E 's/^[[:space:]]*alias //' || true)
+        [ -n "$aliases" ] && alias_fallback=true
+    fi
+
+    {
+        printf '%s\n' "${C_TITLE} COMMAND CHEATSHEET ${C_RESET}"
+        printf 'Generated %s by install_base_apps.sh\n' "$(date '+%Y-%m-%d')"
+        printf '%s\n\n' "${C_DIM}View: cat ~/${CHEATSHEET_FILE}    or: less -R ~/${CHEATSHEET_FILE}${C_RESET}"
+
+        printf '%s\n' "${C_SECTION}COMMANDS INSTALLED BY THIS SCRIPT${C_RESET}"
+        printf '%s\n\n' "${C_DIM}Basic usage only; see each command's man page for the full reference.${C_RESET}"
+
+        local entry label probe summary ex1 ex2 probe_first probe_second
+        for entry in "${cheatsheet_entries[@]}"; do
+            IFS='|' read -r label probe summary ex1 ex2 <<< "$entry"
+            probe_first="${probe%%/*}"
+            probe_second=""
+            [ "$probe" != "$probe_first" ] && probe_second="${probe#*/}"
+
+            printf '%s%s%s  %s\n' "$C_CMD" "$label" "$C_RESET" "$summary"
+            if ! command -v "$probe_first" >/dev/null 2>&1 &&
+               { [ -z "$probe_second" ] || ! command -v "$probe_second" >/dev/null 2>&1; }; then
+                printf '   %s(not installed)%s\n' "$C_DIM" "$C_RESET"
+            fi
+            printf '   %s$%s %s%s%s\n' "$C_DIM" "$C_RESET" "$C_EXAMPLE" "$ex1" "$C_RESET"
+            [ -n "$ex2" ] && printf '   %s$%s %s%s%s\n' "$C_DIM" "$C_RESET" "$C_EXAMPLE" "$ex2" "$C_RESET"
+
+            case "$label" in
+                fd)
+                    if command -v fdfind >/dev/null 2>&1 && ! command -v fd >/dev/null 2>&1; then
+                        printf '   %sDebian/Ubuntu binary: fdfind (bashrc defines alias fd)%s\n' "$C_DIM" "$C_RESET"
+                    fi
+                    ;;
+                bat)
+                    if command -v batcat >/dev/null 2>&1 && ! command -v bat >/dev/null 2>&1; then
+                        printf '   %sDebian/Ubuntu binary: batcat (bashrc defines alias bat)%s\n' "$C_DIM" "$C_RESET"
+                    fi
+                    ;;
+                eza)
+                    printf '   %sThe bashrc alias ls uses eza when it is installed.%s\n' "$C_DIM" "$C_RESET"
+                    ;;
+                mcfly)
+                    printf '   %sPrimary use: press Ctrl-R in an interactive shell.%s\n' "$C_DIM" "$C_RESET"
+                    ;;
+                nala)
+                    if [ "${PKG_MANAGER:-}" != "apt" ]; then
+                        printf '   %sAPT-only; skipped on non-APT systems.%s\n' "$C_DIM" "$C_RESET"
+                    fi
+                    ;;
+            esac
+            printf '\n'
+        done
+
+        printf '%s\n' "${C_SECTION}SHELL ALIASES (from bashrc)${C_RESET}"
+        printf '%s\n' "${C_DIM}Effective aliases for this system; conditional aliases appear only when their tool is installed.${C_RESET}"
+        if [ -f "$bashrc_source" ] && ! cmp -s "$bashrc_source" "$target_home/.bashrc" 2>/dev/null; then
+            printf '%s\n' "${C_DIM}Note: install the bundled .bashrc (sudo bash install_base_apps.sh --yes) for these to take effect.${C_RESET}"
+        fi
+        printf '\n'
+
+        if [ -n "$aliases" ]; then
+            local line name value
+            while IFS= read -r line; do
+                [ -n "$line" ] || continue
+                line="${line#alias }"
+                name="${line%%=*}"
+                value="${line#*=}"
+                value="${value#\'}"
+                value="${value%\'}"
+                # Strip control characters that could corrupt terminal output.
+                value=$(printf '%s' "$value" | tr -d '\000-\010\013\014\016-\037\177' 2>/dev/null || printf '%s' "$value")
+                printf '  %s%-8s%s %s\n' "$C_ALIAS" "$name" "$C_RESET" "$value"
+            done <<< "$aliases"
+            if [ "$alias_fallback" = true ]; then
+                printf '\n%sNote: conditional aliases are listed without checking whether their tools are installed.%s\n' "$C_DIM" "$C_RESET"
+            fi
+        else
+            printf '  %sNo aliases could be read from the bundled bashrc.%s\n' "$C_DIM" "$C_RESET"
+        fi
+
+        printf '\n%sRegenerate: sudo bash install_base_apps.sh%s\n' "$C_DIM" "$C_RESET"
+    } > "$tmp"
+
+    if ! chmod 644 "$tmp"; then
+        rm -f "$tmp"
+        echo "Error: failed to set permissions on $tmp" >&2
+        return 1
+    fi
+    if [ -n "$target_user" ]; then
+        if ! chown "$target_user": "$tmp"; then
+            rm -f "$tmp"
+            echo "Error: failed to set ownership of the cheatsheet to $target_user" >&2
+            return 1
+        fi
+    fi
+    if ! mv -f "$tmp" "$cheatsheet_path"; then
+        rm -f "$tmp"
+        echo "Error: failed to write $cheatsheet_path" >&2
+        return 1
+    fi
+
+    log "✓ Wrote command cheatsheet to $cheatsheet_path"
+    return 0
+}
+
 usage() {
     cat <<'EOF'
 Usage: install_base_apps.sh [OPTIONS]
@@ -864,6 +1061,7 @@ print_summary
 # Offer to apply the bundled bashrc
 exit_code=0
 install_bashrc || exit_code=1
+generate_cheatsheet || exit_code=1
 
 if [ ${#failed_apps[@]} -gt 0 ]; then
     if [ "$IGNORE_FAILURES" = true ]; then
