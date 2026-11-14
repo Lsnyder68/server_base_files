@@ -1,129 +1,92 @@
-# ~/.bashrc: executed by bash(1) for non-login shells.
-
-# You may uncomment the following lines if you want `ls' to be colorized:
-# export LS_OPTIONS='--color=auto'
-# eval "$(dircolors)"
-# alias ls='ls $LS_OPTIONS'
-# alias ll='ls $LS_OPTIONS -l'
-# alias l='ls $LS_OPTIONS -lA'
+# server-base shell fragment
 #
-# Some more alias to avoid making mistakes:
-# alias rm='rm -i'
-# alias cp='cp -i'
-# alias mv='mv -i'
+# Sourced from a managed block inside ~/.bashrc. Keep this file free of
+# distro-specific boilerplate (prompt setup, dircolors, completion guards,
+# ~/.bash_aliases sourcing): the host's own skeleton already does those, and
+# replacing them is what used to break tab completion and RHEL's /etc/bashrc.
+#
+# Everything here must be silent and safe under `set -u`.
 
-# don't put duplicate lines in the history. See bash(1) for more options
-# ... or force ignoredups and ignorespace
-HISTCONTROL=ignoredups:ignorespace
+# Raise history limits, never lower them. `:=` does not work here: interactive
+# bash always pre-sets HISTSIZE (500).
+#
+# A value we cannot read as a positive number is left exactly as the host set
+# it. Bash treats an unset, empty or non-numeric HISTFILESIZE as "never
+# truncate" and a negative one as "unlimited", so clamping it would delete
+# history that has no other copy. A deliberate 0 (history disabled) is honoured
+# for the same reason. HISTSIZE is memory-only, but the same rule keeps a host
+# from having a privacy setting silently reversed.
+if ! declare -p HISTSIZE 2>/dev/null | grep -q '^declare -[^ ]*r'; then
+    case "${HISTSIZE:-}" in
+        ''|*[!0-9]*) ;;                                 # unset or unlimited
+        0) ;;                                           # disabled on purpose
+        *) if [ "$HISTSIZE" -lt 10000 ]; then HISTSIZE=10000; fi ;;
+    esac
+fi
 
-# append to the history file, don't overwrite it
+# Do not invent a HISTFILESIZE where the host has none: setting one introduces
+# truncation at shell exit, which a host with an unset value does not have.
+if ! declare -p HISTFILESIZE 2>/dev/null | grep -q '^declare -[^ ]*r'; then
+    case "${HISTFILESIZE:-}" in
+        ''|*[!0-9]*) ;;                                 # never truncated
+        0) ;;                                           # no history file
+        *) if [ "$HISTFILESIZE" -lt 20000 ]; then HISTFILESIZE=20000; fi ;;
+    esac
+fi
+
+# Append the history options we want without discarding host policy.
+if ! declare -p HISTCONTROL 2>/dev/null | grep -q '^declare -[^ ]*r'; then
+    case ":${HISTCONTROL:-}:" in
+        *:ignoredups:*|*:ignoreboth:*) ;;
+        *) HISTCONTROL="${HISTCONTROL:+$HISTCONTROL:}ignoredups" ;;
+    esac
+    case ":${HISTCONTROL:-}:" in
+        *:ignorespace:*|*:ignoreboth:*) ;;
+        *) HISTCONTROL="${HISTCONTROL:+$HISTCONTROL:}ignorespace" ;;
+    esac
+fi
+
 shopt -s histappend
-
-# for setting history length see HISTSIZE and HISTFILESIZE in bash(1)
-HISTSIZE=10000
-HISTFILESIZE=10000
-
-# check the window size after each command and, if necessary,
-# update the values of LINES and COLUMNS.
 shopt -s checkwinsize
 
-# set a fancy prompt (non-color, unless we know we "want" color)
-case "$TERM" in
-    xterm-color) color_prompt=yes;;
+# Standardize the prompt only when the host still has bash's bare default,
+# so a custom or distro prompt is left alone.
+case "${PS1:-}" in
+    '\s-\v\$ '*)
+        PS1='${debian_chroot:+($debian_chroot)}\[\033[01;32m\]\u@\h\[\033[00m\]:\[\033[01;34m\]\w\[\033[00m\]\$ '
+        ;;
 esac
 
-# uncomment for a colored prompt, if the terminal has the capability; turned
-# off by default to not distract the user: the focus in a terminal window
-# should be on the output of commands, not on the prompt
-force_color_prompt=yes
-
-if [ -n "$force_color_prompt" ]; then
-    if [ -x /usr/bin/tput ] && tput setaf 1 >&/dev/null; then
-        # We have color support; assume it's compliant with Ecma-48
-        # (ISO/IEC-6429). (Lack of such support is extremely rare, and such
-        # a case would tend to support setf rather than setaf.)
-        color_prompt=yes
-    else
-        color_prompt=
-    fi
-fi
-
-if [ "$color_prompt" = yes ]; then
-    PS1='${debian_chroot:+($debian_chroot)}\[\033[01;32m\]\u@\h\[\033[00m\]:\[\033[01;34m\]\w\[\033[00m\]\$ '
-else
-    PS1='${debian_chroot:+($debian_chroot)}\u@\h:\w\$ '
-fi
-unset color_prompt force_color_prompt
-
-# If this is an xterm set the title to user@host:dir
-case "$TERM" in
-xterm*|rxvt*)
-    PS1="\[\e]0;${debian_chroot:+($debian_chroot)}\u@\h: \w\a\]$PS1"
-    ;;
-*)
-    ;;
-esac
-
-# enable color support of ls and also add handy aliases
-if [ -x /usr/bin/dircolors ]; then
-    test -r ~/.dircolors && eval "$(dircolors -b ~/.dircolors)" || eval "$(dircolors -b)"
-    alias ls='ls --color=auto'
-    #alias dir='dir --color=auto'
-    #alias vdir='vdir --color=auto'
-
-    alias grep='grep --color=auto'
-    alias fgrep='fgrep --color=auto'
-    alias egrep='egrep --color=auto'
-fi
-
-# some more ls aliases
-# Commented out: these used the `ls` alias, which now points at `eza`
-# alias ll='ls -alFh'
-# alias la='ls -Ah'
-# alias l='ls -CF'
+# Helpful aliases. `ld` is deliberately absent: it shadows the GNU linker.
 alias hs='history | grep'
-alias octal='stat --printf="%A\t%a\t%h\t%U\t%G\t%s\t%.19y\t%n\n" * | numfmt --to=iec-i --field=6 --delimiter='' --suffix=B'
-alias ld='stat -c "%a %n" *'
+alias octal='stat --printf="%A\t%a\t%h\t%U\t%G\t%s\t%.19y\t%n\n" * | numfmt --to=iec-i --field=6 --delimiter="" --suffix=B'
 
-# Modern replacements, guarded so shells without the tools don't break.
 # Debian/Ubuntu name the binaries batcat/fdfind; other distros use bat/fd.
 if command -v batcat >/dev/null 2>&1; then
     alias bat='batcat'
 fi
-
 if command -v fdfind >/dev/null 2>&1; then
     alias fd='fdfind'
 fi
 
-# Prefer eza for ls when available; otherwise the colorized `ls` alias above stands.
+# Prefer eza for ls when available.
 if command -v eza >/dev/null 2>&1; then
     alias ls='eza -a --long --group-directories-first --octal-permissions --git'
+    alias ll='eza -a --long --group-directories-first --octal-permissions --git'
+    alias la='eza -a --long --all'
+    alias l='eza -a --long --all --group-directories-first'
 fi
 
-# Alias definitions.
-# You may want to put all your additions into a separate file like
-# ~/.bash_aliases, instead of adding them here directly.
-# See /usr/share/doc/bash-doc/examples in the bash-doc package.
-
-if [ -f ~/.bash_aliases ]; then
-    . ~/.bash_aliases
-fi
-
-# enable programmable completion features (you don't need to enable
-# this, if it's already enabled in /etc/bash.bashrc and /etc/profile
-# sources /etc/bash.bashrc).
-#if [ -f /etc/bash_completion ] && ! shopt -oq posix; then
-#    . /etc/bash_completio
-
-# Initialize McFly if installed
-if command -v mcfly >/dev/null 2>&1; then
+# Initialize optional tools once, even if the host already does so elsewhere.
+if command -v mcfly >/dev/null 2>&1 && [ -z "${MCFLY_SHELL_INIT:-}" ]; then
     eval "$(mcfly init bash)"
+    MCFLY_SHELL_INIT=1
 fi
 
-#leaving this version which doesn't seem to work with all of my servers
-#eval "$(zoxide init --cmd cd bash)"
-
-# Initialize Zoxide if installed
-if command -v zoxide >/dev/null 2>&1; then
+if command -v zoxide >/dev/null 2>&1 && [ -z "${ZOXIDE_SHELL_INIT:-}" ]; then
     eval "$(zoxide init bash)"
+    ZOXIDE_SHELL_INIT=1
 fi
+
+# Sentinel used by `install_base_apps.sh --bashrc-check` and login-shell tests.
+SERVER_BASE_LOADED=1
