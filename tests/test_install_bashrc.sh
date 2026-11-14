@@ -138,19 +138,19 @@ test_symlink_target() {
 }
 
 test_recovery_of_flattened_host() {
-    local home old_bundle out status candidate
+    local home old_bundle out status candidate rev
     new_env; home=$TEST_HOME
 
     # Simulate a host flattened by an older release: current .bashrc is an
-    # exact copy of a bundle that shipped earlier.
+    # exact copy of a bundle that shipped earlier. Fall back to the current
+    # bundle when the test runs from a tarball without git history.
     old_bundle="$home/old-bashrc"
-    local rev
-    rev=$(git -C "$ROOT" log --format=%H -- bashrc | tail -n 1)
-    git -C "$ROOT" show "$rev:bashrc" > "$old_bundle" 2>/dev/null || {
-        fail "recovery: could not read historical bundle" ""
-        rm -rf "$home"
-        return
-    }
+    if command -v git >/dev/null 2>&1 &&
+       git -C "$ROOT" rev-parse --git-dir >/dev/null 2>&1; then
+        rev=$(git -C "$ROOT" log --format=%H -- bashrc | tail -n 1)
+        git -C "$ROOT" show "$rev:bashrc" > "$old_bundle" 2>/dev/null || true
+    fi
+    [ -s "$old_bundle" ] || cp "$ROOT/bashrc" "$old_bundle"
     cp "$old_bundle" "$home/.bashrc"
 
     # A legacy backup still holds the real host content.
@@ -165,9 +165,103 @@ test_recovery_of_flattened_host() {
     assert_contains "recovery: restored PATH" "$(cat "$home/.bashrc")" "/opt/legacy"
     assert_contains "recovery: suggests a re-run" "$out" "Re-run this installer"
 
-    out=$(install_bashrc 2>&1)
+    out=$(install_bashrc 2>&1); status=$?
+    assert_eq "recovery: install succeeds after restore" 0 "$status"
     assert_contains "recovery: block layers on restored file" "$out" "Added the server-base block"
     assert_contains "recovery: restored PATH survives" "$(cat "$home/.bashrc")" "/opt/legacy"
+
+    rm -rf "$home"
+}
+
+test_dry_run_changes_nothing() {
+    local home before out status
+    new_env; home=$TEST_HOME
+    printf 'export PATH="/opt/x:$PATH"\n' > "$home/.bashrc"
+    install_bashrc >/dev/null 2>&1
+
+    # --bashrc-uninstall
+    before=$(sb_hash_file "$home/.bashrc")
+    DRY_RUN=true
+    out=$(bashrc_uninstall_cmd 2>&1); status=$?
+    assert_eq "dry-run uninstall: succeeds" 0 "$status"
+    assert_contains "dry-run uninstall: says what it would do" "$out" "Would remove this block"
+    assert_eq "dry-run uninstall: file untouched" "$before" "$(sb_hash_file "$home/.bashrc")"
+
+    # --restore-bashrc on a flattened host
+    cp "$ROOT/bashrc" "$home/.bashrc"
+    printf 'export PATH="/opt/legacy:$PATH"\n' > "$home/.bashrc_20240101-10:00"
+    before=$(sb_hash_file "$home/.bashrc")
+    out=$(bashrc_restore_cmd 2>&1); status=$?
+    assert_eq "dry-run restore: succeeds" 0 "$status"
+    assert_contains "dry-run restore: says what it would do" "$out" "Would replace"
+    assert_eq "dry-run restore: file untouched" "$before" "$(sb_hash_file "$home/.bashrc")"
+
+    # A real install would stop instead of layering on a bundle copy.
+    out=$(install_bashrc 2>&1); status=$?
+    assert_eq "dry-run flattened: install succeeds" 0 "$status"
+    assert_contains "dry-run flattened: a real run would stop" "$out" "would stop here"
+    assert_eq "dry-run flattened: file untouched" "$before" "$(sb_hash_file "$home/.bashrc")"
+
+    DRY_RUN=false
+    rm -rf "$home"
+}
+
+test_install_refuses_flattened_host() {
+    local home before out status
+    new_env; home=$TEST_HOME
+    cp "$ROOT/bashrc" "$home/.bashrc"
+    printf 'export PATH="/opt/legacy:$PATH"\n' > "$home/.bashrc_20240101-10:00"
+    before=$(sb_hash_file "$home/.bashrc")
+
+    out=$(install_bashrc 2>&1); status=$?
+    assert_eq "flattened: install refuses" 1 "$status"
+    assert_contains "flattened: names the restore command" "$out" "--restore-bashrc"
+    assert_eq "flattened: file untouched" "$before" "$(sb_hash_file "$home/.bashrc")"
+    assert_eq "flattened: permanent backup not seeded from a bundle" 1 \
+        "$(test -e "$home/$SERVER_BASE_PERMANENT_BACKUP_NAME"; echo $?)"
+
+    rm -rf "$home"
+}
+
+test_restore_survives_pruning() {
+    local home backup out status i
+    new_env; home=$TEST_HOME
+    backup="$home/$SERVER_BASE_BACKUP_DIR_NAME"
+    mkdir -p "$backup"
+    cp "$ROOT/bashrc" "$home/.bashrc"
+
+    # The only good copy is older than five bundle copies, so rotating the
+    # current file during the restore prunes it before it can be read.
+    printf 'export PATH="/opt/legacy:$PATH"\n' > "$backup/bashrc.20240101-000000"
+    for i in 1 2 3 4 5; do
+        cp "$ROOT/bashrc" "$backup/bashrc.2025010$i-000000"
+    done
+
+    out=$(bashrc_restore_cmd 2>&1); status=$?
+    assert_eq "restore: survives pruning of the oldest candidate" 0 "$status"
+    assert_contains "restore: real content restored" \
+        "$(cat "$home/.bashrc")" "/opt/legacy"
+
+    rm -rf "$home"
+}
+
+test_restore_after_block_installed() {
+    local home out status
+    new_env; home=$TEST_HOME
+    cp "$ROOT/bashrc" "$home/.bashrc"
+    {
+        printf '%s\n' "$SERVER_BASE_BEGIN"
+        printf '# server-base: version=2 sha256=deadbeef\n'
+        printf 'export SERVER_BASE_LOADED=1\n'
+        printf '%s\n' "$SERVER_BASE_END"
+    } >> "$home/.bashrc"
+    printf 'export PATH="/opt/legacy:$PATH"\n' > "$home/.bashrc_20240101-10:00"
+
+    out=$(bashrc_restore_cmd 2>&1); status=$?
+    assert_eq "restore: works after the block was installed" 0 "$status"
+    assert_contains "restore: managed block is gone" \
+        "$(grep -cxF "$SERVER_BASE_BEGIN" "$home/.bashrc")" "0"
+    assert_contains "restore: real content back" "$(cat "$home/.bashrc")" "/opt/legacy"
 
     rm -rf "$home"
 }
@@ -179,6 +273,10 @@ main() {
     test_malformed_refuses
     test_symlink_target
     test_recovery_of_flattened_host
+    test_dry_run_changes_nothing
+    test_install_refuses_flattened_host
+    test_restore_survives_pruning
+    test_restore_after_block_installed
 
     echo ""
     printf '%d passed, %d failed\n' "$PASS" "$FAIL"

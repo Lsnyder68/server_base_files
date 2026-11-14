@@ -7,18 +7,29 @@
 #
 # Everything here must be silent and safe under `set -u`.
 
-# Raise history limits instead of lowering a host's larger values. `:=`
-# does not work here: interactive bash always pre-sets HISTSIZE (500).
+# Raise history limits, never lower them. `:=` does not work here: interactive
+# bash always pre-sets HISTSIZE (500).
+#
+# A value we cannot read as a positive number is left exactly as the host set
+# it. Bash treats an unset, empty or non-numeric HISTFILESIZE as "never
+# truncate" and a negative one as "unlimited", so clamping it would delete
+# history that has no other copy. A deliberate 0 (history disabled) is honoured
+# for the same reason. HISTSIZE is memory-only, but the same rule keeps a host
+# from having a privacy setting silently reversed.
 if ! declare -p HISTSIZE 2>/dev/null | grep -q '^declare -[^ ]*r'; then
     case "${HISTSIZE:-}" in
-        ''|*[!0-9]*) HISTSIZE=10000 ;;
+        ''|*[!0-9]*) ;;                                 # unset or unlimited
+        0) ;;                                           # disabled on purpose
         *) if [ "$HISTSIZE" -lt 10000 ]; then HISTSIZE=10000; fi ;;
     esac
 fi
 
+# Do not invent a HISTFILESIZE where the host has none: setting one introduces
+# truncation at shell exit, which a host with an unset value does not have.
 if ! declare -p HISTFILESIZE 2>/dev/null | grep -q '^declare -[^ ]*r'; then
     case "${HISTFILESIZE:-}" in
-        ''|*[!0-9]*) HISTFILESIZE=20000 ;;
+        ''|*[!0-9]*) ;;                                 # never truncated
+        0) ;;                                           # no history file
         *) if [ "$HISTFILESIZE" -lt 20000 ]; then HISTFILESIZE=20000; fi ;;
     esac
 fi

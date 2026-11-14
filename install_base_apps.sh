@@ -681,12 +681,18 @@ resolve_user_home() {
 
 resolve_target_account() {
     TARGET_USER=""
+    TARGET_GROUP=""
+    TARGET_OWNER=""
     TARGET_HOME="${HOME:-}"
     # sudo sets SUDO_USER; doas (Alpine) sets DOAS_USER; `su -` sets neither.
     local invoking_user="${SUDO_USER:-${DOAS_USER:-}}"
     if [ -n "$invoking_user" ] && [ "$invoking_user" != "root" ]; then
         TARGET_USER="$invoking_user"
         TARGET_HOME=$(resolve_user_home "$invoking_user")
+        TARGET_GROUP=$(id -gn "$invoking_user" 2>/dev/null || true)
+        if [ -n "$TARGET_GROUP" ]; then
+            TARGET_OWNER="$TARGET_USER:$TARGET_GROUP"
+        fi
     fi
     [ -z "$TARGET_HOME" ] && TARGET_HOME="${HOME:-}"
     [ -n "$TARGET_HOME" ] && [ -d "$TARGET_HOME" ]
@@ -732,17 +738,34 @@ install_bashrc() {
     local state
     state=$(sb_scan_markers "$write_target" | awk '{print $1}')
 
-    # A host that an older release already flattened keeps the only copy of
-    # its lost PATH lines in a legacy backup. Surface it.
+    # A host that an older release already flattened has lost its own lines and
+    # keeps the only copy in a legacy backup. Never layer the block on top of a
+    # bundle copy: that would make "the original" a bundle copy and leave the
+    # real file reachable only through --restore-bashrc.
     local recovery=""
-    if [ "$state" = "none" ] && [ -f "$write_target" ]; then
+    if [ -f "$write_target" ]; then
         recovery=$(sb_recovery_backup "$write_target" "$SCRIPT_DIR" \
             "$BASHRC_BACKUP_DIR" "$target_home" 2>/dev/null || true)
-        if [ -n "$recovery" ]; then
-            echo "Note: $write_target matches a previously shipped bashrc."
-            echo "      Newest backup that is not a bundle copy:"
-            echo "        $recovery"
+    fi
+    if [ -n "$recovery" ]; then
+        echo "Note: $write_target is an exact copy of a previously shipped bashrc,"
+        echo "      so the host's own PATH and init lines are missing from it."
+        echo "      Newest backup that is not a bundle copy:"
+        echo "        $recovery"
+        if [ "$DRY_RUN" = true ]; then
+            echo "[DRY RUN] A real run would stop here and ask you to restore first."
+            return 0
         fi
+        echo ""
+        echo "Restore the real file first, then re-run this installer:"
+        echo "  sudo bash ${0##*/} --restore-bashrc"
+        echo "If that backup is not worth recovering, delete it and re-run."
+        return 1
+    fi
+    if [ -f "$write_target" ] &&
+       sb_is_bundle_copy "$write_target" "$SCRIPT_DIR"; then
+        echo "Note: $write_target is an exact copy of a shipped bashrc and no"
+        echo "      older copy of the host's own lines was found; adding the block."
     fi
 
     if [ "$DRY_RUN" = true ]; then
@@ -779,7 +802,7 @@ install_bashrc() {
     local status=0
     SB_RESULT="unchanged"
     sb_install_block "$write_target" "$bashrc_source" \
-        "$BASHRC_PERMANENT_BACKUP" "$BASHRC_BACKUP_DIR" || status=$?
+        "$BASHRC_PERMANENT_BACKUP" "$BASHRC_BACKUP_DIR" "$TARGET_OWNER" || status=$?
 
     case "$status" in
         0)
@@ -795,7 +818,11 @@ install_bashrc() {
                     log "✓ Updated the server-base block in $target_rc"
                     ;;
             esac
-            echo "Your existing lines were preserved; the original is kept at $BASHRC_PERMANENT_BACKUP."
+            if [ -e "$BASHRC_PERMANENT_BACKUP" ]; then
+                echo "Your existing lines were preserved; the original is kept at $BASHRC_PERMANENT_BACKUP."
+            else
+                echo "Your existing lines were preserved."
+            fi
             log "Open a new terminal or run 'exec bash' to apply the changes."
             ;;
         10)
@@ -812,12 +839,6 @@ install_bashrc() {
             ;;
     esac
 
-    if [ -n "$recovery" ]; then
-        echo ""
-        echo "Recovery available: $recovery"
-        echo "  Review:  diff -u $write_target $recovery"
-        echo "  Restore: sudo bash ${0##*/} --restore-bashrc"
-    fi
     return 0
 }
 
@@ -851,6 +872,23 @@ bashrc_check_cmd() {
 bashrc_uninstall_cmd() {
     if ! resolve_target_bashrc; then
         return 1
+    fi
+    if [ "$DRY_RUN" = true ]; then
+        local state
+        state=$(sb_scan_markers "$WRITE_TARGET" | awk '{print $1}')
+        case "$state" in
+            none)
+                echo "[DRY RUN] No server-base block found in $TARGET_RC."
+                return 0
+                ;;
+            malformed)
+                echo "[DRY RUN] Malformed server-base markers in $TARGET_RC; a real run would refuse." >&2
+                return 1
+                ;;
+        esac
+        echo "[DRY RUN] Would remove this block from $TARGET_RC:"
+        sb_preview_removal "$WRITE_TARGET"
+        return 0
     fi
     local status=0
     sb_remove_block "$WRITE_TARGET" || status=$?
@@ -893,6 +931,11 @@ bashrc_restore_cmd() {
     diff -u "$WRITE_TARGET" "$candidate" 2>/dev/null || true
     echo ""
 
+    if [ "$DRY_RUN" = true ]; then
+        echo "[DRY RUN] Would replace $TARGET_RC with $candidate"
+        return 0
+    fi
+
     if [ "$ASSUME_YES" != true ]; then
         if [ ! -t 0 ]; then
             echo "Refusing to restore non-interactively; re-run with --yes." >&2
@@ -908,12 +951,33 @@ bashrc_restore_cmd() {
 
     # Rotate the current file, but never seed the permanent backup from a
     # flattened bundle copy: the permanent slot is reserved for real host content.
-    sb_rotate_backup "$WRITE_TARGET" "$BASHRC_BACKUP_DIR" || true
-
-    if ! sb_write_atomic "$candidate" "$WRITE_TARGET"; then
-        echo "Error: failed to restore $TARGET_RC." >&2
+    # Copy the chosen candidate out of the backup directory first: rotating the
+    # current file prunes to the five newest names, and the candidate may be the
+    # oldest one, in which case pruning would delete it before it was read.
+    local workdir staged
+    workdir=$(mktemp -d "${TMPDIR:-/tmp}/server-base.XXXXXX") || {
+        echo "Error: could not create a temporary directory." >&2
+        return 1
+    }
+    staged="$workdir/candidate"
+    if ! cp -- "$candidate" "$staged"; then
+        echo "Error: could not read $candidate." >&2
+        rm -rf "$workdir"
         return 1
     fi
+
+    if ! sb_rotate_backup "$WRITE_TARGET" "$BASHRC_BACKUP_DIR" "$TARGET_OWNER"; then
+        echo "Error: could not back up $TARGET_RC; leaving it unchanged." >&2
+        rm -rf "$workdir"
+        return 1
+    fi
+
+    if ! sb_write_atomic "$staged" "$WRITE_TARGET"; then
+        echo "Error: failed to restore $TARGET_RC." >&2
+        rm -rf "$workdir"
+        return 1
+    fi
+    rm -rf "$workdir"
     echo "✓ Restored $TARGET_RC from $candidate"
     echo "Re-run this installer (without --restore-bashrc) to layer the managed block on top."
     return 0
@@ -1015,8 +1079,9 @@ generate_cheatsheet() {
 
         printf '%s\n' "${C_SECTION}SHELL ALIASES (from bashrc)${C_RESET}"
         printf '%s\n' "${C_DIM}Effective aliases for this system; conditional aliases appear only when their tool is installed.${C_RESET}"
-        if [ -f "$bashrc_source" ] && ! cmp -s "$bashrc_source" "$target_home/.bashrc" 2>/dev/null; then
-            printf '%s\n' "${C_DIM}Note: install the bundled .bashrc (sudo bash install_base_apps.sh --yes) for these to take effect.${C_RESET}"
+        if [ -f "$bashrc_source" ] &&
+           ! sb_check "$target_home/.bashrc" "$bashrc_source" >/dev/null 2>&1; then
+            printf '%s\n' "${C_DIM}Note: the managed server-base block in ~/.bashrc is missing or out of date; re-run with --yes to update it.${C_RESET}"
         fi
         printf '\n'
 

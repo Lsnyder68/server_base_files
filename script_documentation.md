@@ -15,16 +15,18 @@ exec bash                                  # apply the new shell configuration
 ```
 
 Keep the repository layout intact. `install_base_apps.sh` sources
-`lib/bashrc_block.sh`, and `--restore-bashrc` reads bundle history from `.git`.
-Copying only the `.sh` file to a server exits at startup with a missing-library
-error.
+`lib/bashrc_block.sh`. Copying only the `.sh` file to a server exits at startup
+with a missing-library error.
 
 ## Prerequisites
 - **Root Privileges**: Required for real installs (run with `sudo`). The script checks this at startup and exits if not root. `--dry-run`, `--bashrc-check`, `--bashrc-uninstall`, and `--restore-bashrc` are exempt; the last three only touch the invoking user's own `~/.bashrc`.
 - **Bash**: The script targets bash 4 or newer (arrays, `declare -p`, `[[ ]]`). `/bin/sh` will not work; invoke it with `bash`.
 - **Repository files**: `install_base_apps.sh`, `bashrc`, and `lib/bashrc_block.sh` must remain together.
 - **Supported Package Manager**: The system must have one of the following installed: `apt-get`, `dnf`, `pacman`, `zypper`, or `apk`.
-- **Git**: Optional. It is installed as one of the base apps, and `--restore-bashrc` uses it when present to identify historical bundle copies.
+- **Git**: Optional. It is installed as one of the base apps, but no script mode
+  needs it: the hashes of previously shipped bundles are built into
+  `lib/bashrc_block.sh`, so `--restore-bashrc` also works from a tarball, a
+  shallow clone, or a worktree.
 
 ## Usage
 
@@ -60,7 +62,11 @@ cat /tmp/install_base_apps.out
 ```bash
 sudo bash install_base_apps.sh --dry-run
 ```
-Makes no changes: no installs, no `.bashrc` backup, no log file writes. Because the shell block is rendered in full, the output includes a unified diff of the proposed `~/.bashrc`.
+Makes no changes: no installs, no `.bashrc` backup, no log file writes, and no
+`--bashrc-uninstall` or `--restore-bashrc` write. Because the shell block is
+rendered in full, the output includes a unified diff of the proposed `~/.bashrc`;
+a dry-run uninstall prints the block it would remove, and a dry-run restore
+prints the diff it would apply.
 
 ### Choosing a mode
 
@@ -81,16 +87,25 @@ safe to run over SSH from a loop or a monitoring check.
 
 1. Audit first, to find the hosts that need repair:
    ```bash
-   bash install_base_apps.sh --bashrc-check; echo "host $(hostname): $?"
+   bash install_base_apps.sh --bashrc-check; rc=$?; echo "host $(hostname): $rc"
    ```
 2. On a host that returns `1` *and* whose `.bashrc` is a bundle copy, restore the
    real file before layering the block:
    ```bash
    sudo bash install_base_apps.sh --restore-bashrc   # shows a diff, asks to confirm
    ```
-   Use `--yes` only on a host you have already inspected.
+   Use `--yes` only on a host you have already inspected. A normal install
+   refuses to layer the block onto a bundle copy and names the backup to use, so
+   an unattended `--yes` rollout stops on exactly these hosts instead of
+   recording the bundle as "the original".
 3. Install normally. The block is appended to the restored file, so the
    recovered `PATH` lines keep working.
+
+`--restore-bashrc` compares the current file with the shipped bundle hashes after
+removing any managed block, so it still works on a host where an older copy of
+this release already installed the block. Candidates from `~/.bashrc_*` and
+`~/.local/share/server-base/backups/` are ordered by the timestamp in the file
+name, newest first.
 
 ### Updating an existing host
 
@@ -232,7 +247,7 @@ written into `~/.bashrc` as a managed block:
 
 ```bash
 # >>> server-base (managed) >>>
-# server-base: version=2 sha256=...
+# server-base: version=3 sha256=...
 if [[ $- == *i* ]]; then
 ...
 fi
@@ -255,25 +270,39 @@ Behaviour:
   Debian's ssh handling) and cannot corrupt `scp`/`rsync`.
 - **Safe under `set -u`.** The fragment tests readonly or unset history
   variables before assigning them.
+- **History limits are only raised.** A value that is unset, empty, negative,
+  non-numeric, or `0` is left exactly as the host set it: `HISTFILESIZE=-1`
+  stays unlimited, an unset `HISTFILESIZE` is not given a limit that would
+  truncate the file at exit, and a deliberate `0` is not re-enabled. Positive
+  values below the thresholds are raised to `HISTSIZE=10000` and
+  `HISTFILESIZE=20000`.
 - **Refuses malformed markers.** Zero or one begin/end pair is allowed;
   anything else exits non-zero and leaves the file untouched. The generated
   file is syntax-checked with `bash -n` before the atomic rename.
 - **Preserves mode and owner.** A `600` `.bashrc` stays `600`; `SUDO_USER`
-  and `DOAS_USER` are honoured. If `~/.bashrc` is a symlink (dotfiles repo),
-  the link is kept and its target updated. `restorecon` runs when available.
+  and `DOAS_USER` are honoured. When `.bashrc` does not exist yet, ownership is
+  taken from its directory, so `sudo` does not leave a root-owned file in the
+  user's home. If `~/.bashrc` is a symlink (dotfiles repo), the link is kept
+  and its target updated. `restorecon` runs when available.
 - **Backups.** The first real change keeps a never-pruned copy at
   `~/.bashrc.pre-server-base`. A rotating history of five copies lives in
   `~/.local/share/server-base/backups/`, named `bashrc.YYYYmmdd-HHMMSS` (no
   colons, so the names survive `scp`/`rsync`). Backups deliberately live in
   the home directory, not beside a symlinked dotfiles target, so installing
-  does not dirty a repository.
+  does not dirty a repository. Under `sudo`, any directory this step creates
+  (`~/.local`, `~/.local/share`, ...) is owned by the target user; existing
+  directories keep their mode and owner.
 - **Local edits are reported, not ignored.** If the body no longer matches the
   hash recorded in the meta line, the run still updates the block but warns
   and keeps the edited copy in the backup directory.
 - **Recovery.** On a host whose `.bashrc` is an exact copy of a previously
-  shipped bundle, the script prints the newest backup that is not a bundle
-  copy and offers `--restore-bashrc`, which shows a diff and restores it after
-  confirmation. Without this, PATH lines lost to older releases stayed lost.
+  shipped bundle, the installer refuses to layer the block and prints the
+  newest backup that is not a bundle copy; `--restore-bashrc` shows a diff and
+  restores it after confirmation. Shipped bundle hashes are a fixed table in
+  `lib/bashrc_block.sh` (`tools/bundle-hashes.sh` regenerates it), so this
+  works without git history, and the managed block is ignored when comparing,
+  so recovery still works after the block has been installed. Without this,
+  PATH lines lost to older releases stayed lost.
 - **No in-process sourcing.** The installer no longer sources the installed
   file (doing so ran user content as root under `set -u`, and could be hijacked
   by an `exec tmux` line). It prints `exec bash` instead.
