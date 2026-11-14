@@ -17,8 +17,18 @@ MCFLY_VERSION="v0.9.4"
 MCFLY_INSTALL_SHA256="${MCFLY_INSTALL_SHA256:-}"
 NETWORK_TIMEOUT=60
 INSTALL_TIMEOUT=900
-MAX_BASHRC_BACKUPS=5
 CHEATSHEET_FILE="command_cheatsheet.txt"
+BASHRC_CHECK_ONLY=false
+BASHRC_UNINSTALL=false
+RESTORE_BASHRC=false
+
+SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+if [ ! -r "$SCRIPT_DIR/lib/bashrc_block.sh" ]; then
+    echo "Error: missing $SCRIPT_DIR/lib/bashrc_block.sh" >&2
+    exit 1
+fi
+# shellcheck source=lib/bashrc_block.sh
+. "$SCRIPT_DIR/lib/bashrc_block.sh"
 
 # ANSI colors for the generated command cheatsheet. NO_COLOR disables them.
 if [ -n "${NO_COLOR:-}" ]; then
@@ -672,77 +682,90 @@ resolve_user_home() {
 resolve_target_account() {
     TARGET_USER=""
     TARGET_HOME="${HOME:-}"
-    if [ -n "${SUDO_USER:-}" ] && [ "${SUDO_USER:-}" != "root" ]; then
-        TARGET_USER="$SUDO_USER"
-        TARGET_HOME=$(resolve_user_home "$SUDO_USER")
+    # sudo sets SUDO_USER; doas (Alpine) sets DOAS_USER; `su -` sets neither.
+    local invoking_user="${SUDO_USER:-${DOAS_USER:-}}"
+    if [ -n "$invoking_user" ] && [ "$invoking_user" != "root" ]; then
+        TARGET_USER="$invoking_user"
+        TARGET_HOME=$(resolve_user_home "$invoking_user")
     fi
     [ -z "$TARGET_HOME" ] && TARGET_HOME="${HOME:-}"
     [ -n "$TARGET_HOME" ] && [ -d "$TARGET_HOME" ]
 }
 
-prune_bashrc_backups() {
-    local dir="$1"
-    local base="$2"
-    local old count=0
+# Sets TARGET_RC (the user-visible path) and WRITE_TARGET (its symlink target)
+# plus the backup locations. Returns 1 rather than writing through a broken link.
+resolve_target_bashrc() {
+    resolve_target_account || return 1
+    TARGET_RC="$TARGET_HOME/.bashrc"
+    WRITE_TARGET="$TARGET_RC"
+    BASHRC_PERMANENT_BACKUP="$TARGET_HOME/$SERVER_BASE_PERMANENT_BACKUP_NAME"
+    BASHRC_BACKUP_DIR="$TARGET_HOME/$SERVER_BASE_BACKUP_DIR_NAME"
 
-    while IFS= read -r old; do
-        [ -n "$old" ] || continue
-        count=$((count + 1))
-        if [ "$count" -gt "$MAX_BASHRC_BACKUPS" ]; then
-            rm -f -- "$old"
+    if [ -L "$TARGET_RC" ]; then
+        local resolved
+        resolved=$(readlink -f "$TARGET_RC" 2>/dev/null || true)
+        if [ -z "$resolved" ] || [ ! -e "$resolved" ]; then
+            echo "Error: $TARGET_RC is a symlink that cannot be resolved safely." >&2
+            return 1
         fi
-    done <<< "$(find "$dir" -maxdepth 1 -type f -name "${base}_*" 2>/dev/null | sort -r)"
+        WRITE_TARGET="$resolved"
+    fi
+    return 0
 }
 
 install_bashrc() {
-    local script_dir bashrc_source
-    script_dir=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
-    bashrc_source="$script_dir/bashrc"
+    local bashrc_source="$SCRIPT_DIR/bashrc"
 
     if [ ! -f "$bashrc_source" ]; then
         log "No bundled bashrc found at $bashrc_source; skipping shell configuration."
         return 0
     fi
 
-    if ! resolve_target_account; then
-        echo "Error: could not determine a valid home directory for the target user." >&2
+    if ! resolve_target_bashrc; then
         return 1
     fi
-    local target_home="$TARGET_HOME" target_user="$TARGET_USER"
-
-    local target_rc="$target_home/.bashrc"
-    local write_target="$target_rc"
-
-    # Follow an existing symlink (e.g. a dotfiles repo) instead of replacing
-    # the link with a regular file.
-    if [ -L "$target_rc" ]; then
-        local resolved
-        resolved=$(readlink -f "$target_rc" 2>/dev/null || true)
-        if [ -z "$resolved" ] || [ ! -e "$resolved" ]; then
-            echo "Error: $target_rc is a symlink that cannot be resolved safely." >&2
-            return 1
-        fi
-        log "Note: $target_rc is a symlink; updating its target $resolved"
-        write_target="$resolved"
-    fi
+    local target_home="$TARGET_HOME"
+    local target_rc="$TARGET_RC" write_target="$WRITE_TARGET"
 
     echo ""
+
+    local state
+    state=$(sb_scan_markers "$write_target" | awk '{print $1}')
+
+    # A host that an older release already flattened keeps the only copy of
+    # its lost PATH lines in a legacy backup. Surface it.
+    local recovery=""
+    if [ "$state" = "none" ] && [ -f "$write_target" ]; then
+        recovery=$(sb_recovery_backup "$write_target" "$SCRIPT_DIR" \
+            "$BASHRC_BACKUP_DIR" "$target_home" 2>/dev/null || true)
+        if [ -n "$recovery" ]; then
+            echo "Note: $write_target matches a previously shipped bashrc."
+            echo "      Newest backup that is not a bundle copy:"
+            echo "        $recovery"
+        fi
+    fi
+
     if [ "$DRY_RUN" = true ]; then
-        echo "[DRY RUN] Would offer to back up $write_target and copy $bashrc_source to it"
+        if [ "$state" = "malformed" ]; then
+            echo "[DRY RUN] Malformed server-base markers in $write_target; a real run would refuse."
+            return 1
+        fi
+        echo "[DRY RUN] Would install the server-base block into $write_target"
+        sb_preview_diff "$write_target" "$bashrc_source" || true
         return 0
     fi
 
     local answer=""
     if [ "$ASSUME_YES" = true ]; then
         answer="y"
-        log "Applying .bashrc changes automatically (--yes)."
+        log "Applying the server-base block automatically (--yes)."
     else
         # Do not block unattended/non-interactive runs.
         if [ ! -t 0 ]; then
             log "Non-interactive session; skipping bashrc setup (use --yes to apply it)."
             return 0
         fi
-        read -r -p "Back up your current .bashrc and install the new one? [y/N] " answer || answer=""
+        read -r -p "Add/update the server-base block in $target_rc? Existing lines are preserved and backed up. [y/N] " answer || answer=""
     fi
 
     case "$answer" in
@@ -753,67 +776,146 @@ install_bashrc() {
             ;;
     esac
 
-    local backup_dir backup_base
-    backup_dir=$(dirname "$write_target")
-    backup_base=$(basename "$write_target")
+    local status=0
+    SB_RESULT="unchanged"
+    sb_install_block "$write_target" "$bashrc_source" \
+        "$BASHRC_PERMANENT_BACKUP" "$BASHRC_BACKUP_DIR" || status=$?
 
-    if [ -f "$write_target" ]; then
-        local backup="${write_target}_$(date '+%Y%m%d-%H:%M')"
-        # Avoid clobbering a backup made within the same minute.
-        [ -e "$backup" ] && backup="${backup}-$(date '+%S')"
+    case "$status" in
+        0)
+            case "$SB_RESULT" in
+                hand-edited)
+                    log "✓ Updated $target_rc"
+                    echo "Warning: the previous block had local edits; a copy is in $BASHRC_BACKUP_DIR." >&2
+                    ;;
+                created)
+                    log "✓ Added the server-base block to $target_rc"
+                    ;;
+                *)
+                    log "✓ Updated the server-base block in $target_rc"
+                    ;;
+            esac
+            echo "Your existing lines were preserved; the original is kept at $BASHRC_PERMANENT_BACKUP."
+            log "Open a new terminal or run 'exec bash' to apply the changes."
+            ;;
+        10)
+            log "✓ $target_rc already has the current server-base block; nothing to do."
+            ;;
+        3)
+            echo "Error: $target_rc has malformed server-base markers." >&2
+            echo "Fix or remove the '# >>> server-base' block by hand; no changes were made." >&2
+            return 1
+            ;;
+        *)
+            echo "Error: failed to update $target_rc." >&2
+            return 1
+            ;;
+    esac
 
-        if cp -p "$write_target" "$backup"; then
-            log "✓ Backed up existing .bashrc to $backup"
-        else
-            echo "Error: failed to back up $write_target" >&2
+    if [ -n "$recovery" ]; then
+        echo ""
+        echo "Recovery available: $recovery"
+        echo "  Review:  diff -u $write_target $recovery"
+        echo "  Restore: sudo bash ${0##*/} --restore-bashrc"
+    fi
+    return 0
+}
+
+bashrc_check_cmd() {
+    if ! resolve_target_bashrc; then
+        return 1
+    fi
+    local fragment="$SCRIPT_DIR/bashrc" status=0
+    sb_check "$WRITE_TARGET" "$fragment" || status=$?
+    case "$status" in
+        0)
+            printf 'current: %s has server-base v%s with no drift\n' "$TARGET_RC" "$SERVER_BASE_VERSION"
+            ;;
+        1)
+            printf 'outdated: %s is missing the block or has an older bundle\n' "$TARGET_RC"
+            ;;
+        2)
+            printf 'hand-edited: %s has local edits inside the managed block\n' "$TARGET_RC"
+            ;;
+        3)
+            printf 'malformed: %s has broken server-base markers\n' "$TARGET_RC"
+            ;;
+        *)
+            printf 'error: could not check %s\n' "$TARGET_RC"
+            return 1
+            ;;
+    esac
+    return "$status"
+}
+
+bashrc_uninstall_cmd() {
+    if ! resolve_target_bashrc; then
+        return 1
+    fi
+    local status=0
+    sb_remove_block "$WRITE_TARGET" || status=$?
+    case "$status" in
+        0)
+            echo "✓ Removed the server-base block from $TARGET_RC"
+            echo "Other content was left untouched; the original is at $BASHRC_PERMANENT_BACKUP."
+            return 0
+            ;;
+        10)
+            echo "No server-base block found in $TARGET_RC."
+            return 0
+            ;;
+        3)
+            echo "Error: malformed server-base markers in $TARGET_RC; nothing removed." >&2
+            return 1
+            ;;
+        *)
+            echo "Error: failed to update $TARGET_RC." >&2
+            return 1
+            ;;
+    esac
+}
+
+bashrc_restore_cmd() {
+    if ! resolve_target_bashrc; then
+        return 1
+    fi
+
+    local candidate
+    candidate=$(sb_recovery_backup "$WRITE_TARGET" "$SCRIPT_DIR" \
+        "$BASHRC_BACKUP_DIR" "$TARGET_HOME" 2>/dev/null || true)
+    if [ -z "$candidate" ]; then
+        echo "No recovery backup found for $TARGET_RC." >&2
+        echo "Only hosts whose .bashrc is an exact copy of a shipped bundle can be recovered automatically." >&2
+        return 1
+    fi
+
+    echo "Candidate: $candidate"
+    diff -u "$WRITE_TARGET" "$candidate" 2>/dev/null || true
+    echo ""
+
+    if [ "$ASSUME_YES" != true ]; then
+        if [ ! -t 0 ]; then
+            echo "Refusing to restore non-interactively; re-run with --yes." >&2
             return 1
         fi
-        prune_bashrc_backups "$backup_dir" "$backup_base"
+        local answer=""
+        read -r -p "Replace $TARGET_RC with this backup? [y/N] " answer || answer=""
+        case "$answer" in
+            [yY]|[yY][eE][sS]) ;;
+            *) echo "Restore cancelled."; return 0 ;;
+        esac
     fi
 
-    # Write to a temporary file and rename into place so an interrupt cannot
-    # leave a truncated .bashrc behind.
-    local tmp_rc=""
-    if ! tmp_rc=$(mktemp "${write_target}.tmp.XXXXXX"); then
-        echo "Error: failed to create a temporary file next to $write_target" >&2
-        return 1
-    fi
-    TEMP_FILES+=("$tmp_rc")
+    # Rotate the current file, but never seed the permanent backup from a
+    # flattened bundle copy: the permanent slot is reserved for real host content.
+    sb_rotate_backup "$WRITE_TARGET" "$BASHRC_BACKUP_DIR" || true
 
-    if ! cp "$bashrc_source" "$tmp_rc"; then
-        rm -f "$tmp_rc"
-        echo "Error: failed to copy $bashrc_source to a temporary file" >&2
+    if ! sb_write_atomic "$candidate" "$WRITE_TARGET"; then
+        echo "Error: failed to restore $TARGET_RC." >&2
         return 1
     fi
-    if ! chmod 644 "$tmp_rc"; then
-        rm -f "$tmp_rc"
-        echo "Error: failed to set permissions on $tmp_rc" >&2
-        return 1
-    fi
-    if [ -n "$target_user" ]; then
-        if ! chown "$target_user": "$tmp_rc"; then
-            rm -f "$tmp_rc"
-            echo "Error: failed to set ownership of $tmp_rc to $target_user" >&2
-            return 1
-        fi
-    fi
-    if ! mv -f "$tmp_rc" "$write_target"; then
-        rm -f "$tmp_rc"
-        echo "Error: failed to install $write_target" >&2
-        return 1
-    fi
-
-    log "✓ Installed new .bashrc to $target_rc"
-
-    # Apply the new configuration to this session so the aliases and tool
-    # initializers take effect immediately. Each new shell sources it anyway.
-    # shellcheck disable=SC1090
-    if . "$target_rc"; then
-        log "✓ Applied new .bashrc to the current session"
-    else
-        echo "Warning: .bashrc was installed but could not be applied to this session." >&2
-    fi
-    echo "Existing shells can pick up the changes with 'source ~/.bashrc'."
+    echo "✓ Restored $TARGET_RC from $candidate"
+    echo "Re-run this installer (without --restore-bashrc) to layer the managed block on top."
     return 0
 }
 
@@ -967,112 +1069,148 @@ usage() {
     cat <<'EOF'
 Usage: install_base_apps.sh [OPTIONS]
 
-Installs the base application set and optionally installs the bundled bashrc.
+Installs the base application set. The bundled bashrc is applied as a
+managed block inside the existing ~/.bashrc; host-specific lines and PATH
+exports are preserved.
 
 Options:
-  -n, --dry-run          Show what would be done without changing the system
-  -y, --yes              Apply the bundled .bashrc without prompting
+  -n, --dry-run          Show what would be done, including a .bashrc diff
+  -y, --yes              Apply the bashrc block without prompting
       --ignore-failures  Exit 0 even if some installations fail
+      --bashrc-check     Report drift only (0 current, 1 outdated,
+                         2 hand-edited, 3 malformed) and exit
+      --bashrc-uninstall Remove only the managed block and exit
+      --restore-bashrc   Restore a host whose .bashrc was overwritten by an
+                         older release, using the newest non-bundle backup
   -h, --help             Show this help and exit
 EOF
 }
 
 # Main Execution
 
-# Parse arguments
-while [ $# -gt 0 ]; do
-    case "$1" in
-        --dry-run|-n)
-            DRY_RUN=true
-            ;;
-        --yes|-y)
-            ASSUME_YES=true
-            ;;
-        --ignore-failures)
-            IGNORE_FAILURES=true
-            ;;
-        --help|-h)
-            usage
-            exit 0
-            ;;
-        --)
-            shift
-            break
+main() {
+    # Parse arguments
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            --dry-run|-n)
+                DRY_RUN=true
+                ;;
+            --yes|-y)
+                ASSUME_YES=true
+                ;;
+            --ignore-failures)
+                IGNORE_FAILURES=true
+                ;;
+            --bashrc-check)
+                BASHRC_CHECK_ONLY=true
+                ;;
+            --bashrc-uninstall)
+                BASHRC_UNINSTALL=true
+                ;;
+            --restore-bashrc)
+                RESTORE_BASHRC=true
+                ;;
+            --help|-h)
+                usage
+                exit 0
+                ;;
+            --)
+                shift
+                break
+                ;;
+            *)
+                echo "Error: unknown option: $1" >&2
+                usage >&2
+                exit 2
+                ;;
+        esac
+        shift
+    done
+    if [ $# -gt 0 ]; then
+        echo "Error: unexpected argument: $1" >&2
+        usage >&2
+        exit 2
+    fi
+
+    if [ "$DRY_RUN" = true ]; then
+        echo "Running in DRY-RUN mode. No changes will be made."
+    fi
+
+    # Read-only/recovery modes do not install packages, so they may run unprivileged.
+    if [ "$BASHRC_CHECK_ONLY" = true ]; then
+        bashrc_check_cmd
+        exit $?
+    fi
+    if [ "$BASHRC_UNINSTALL" = true ]; then
+        bashrc_uninstall_cmd || exit 1
+        exit 0
+    fi
+    if [ "$RESTORE_BASHRC" = true ]; then
+        bashrc_restore_cmd || exit 1
+        exit 0
+    fi
+
+    # Check Root
+    if [ "$DRY_RUN" = false ] && [ "$(id -u)" -ne 0 ]; then
+      echo "This script must be run as root. Please use sudo." >&2
+      exit 1
+    fi
+
+    acquire_lock
+    check_connectivity
+    detect_package_manager
+    check_package_manager_lock
+
+    if ! update_package_lists; then
+        if [ "$CONNECTIVITY_OK" = false ]; then
+            echo "Error: no network connectivity and package lists could not be updated. Aborting." >&2
+            exit 1
+        fi
+        log "Warning: continuing with cached package metadata."
+    fi
+
+    # Define apps list based on manager
+    case "$PKG_MANAGER" in
+        apt|dnf)
+            apps=("nano" "git" "curl" "wget" "htop" "tmux" "fd-find" "zoxide" "duf" "tree" "neomutt" "bat" "eza")
             ;;
         *)
-            echo "Error: unknown option: $1" >&2
-            usage >&2
-            exit 2
+            apps=("nano" "git" "curl" "wget" "htop" "tmux" "fd" "zoxide" "duf" "tree" "neomutt" "bat" "eza")
             ;;
     esac
-    shift
-done
-if [ $# -gt 0 ]; then
-    echo "Error: unexpected argument: $1" >&2
-    usage >&2
-    exit 2
-fi
 
-if [ "$DRY_RUN" = true ]; then
-    echo "Running in DRY-RUN mode. No changes will be made."
-fi
+    # Install Standard Apps
+    for app in "${apps[@]}"; do
+        install_app "$app"
+    done
 
-# Check Root
-if [ "$DRY_RUN" = false ] && [ "$(id -u)" -ne 0 ]; then
-  echo "This script must be run as root. Please use sudo." >&2
-  exit 1
-fi
+    # Install Manual Apps
+    install_mcfly
+    install_nala
+    install_gping
 
-acquire_lock
-check_connectivity
-detect_package_manager
-check_package_manager_lock
+    print_summary
 
-if ! update_package_lists; then
-    if [ "$CONNECTIVITY_OK" = false ]; then
-        echo "Error: no network connectivity and package lists could not be updated. Aborting." >&2
-        exit 1
+    # Offer to apply the bundled bashrc
+    exit_code=0
+    install_bashrc || exit_code=1
+    generate_cheatsheet || exit_code=1
+
+    if [ ${#failed_apps[@]} -gt 0 ]; then
+        if [ "$IGNORE_FAILURES" = true ]; then
+            log "Warning: ${#failed_apps[@]} step(s) failed; ignoring due to --ignore-failures."
+        else
+            exit_code=1
+        fi
     fi
-    log "Warning: continuing with cached package metadata."
-fi
 
-# Define apps list based on manager
-case "$PKG_MANAGER" in
-    apt|dnf)
-        apps=("nano" "git" "curl" "wget" "htop" "tmux" "fd-find" "zoxide" "duf" "tree" "neomutt" "bat" "eza")
-        ;;
-    *)
-        apps=("nano" "git" "curl" "wget" "htop" "tmux" "fd" "zoxide" "duf" "tree" "neomutt" "bat" "eza")
-        ;;
-esac
-
-# Install Standard Apps
-for app in "${apps[@]}"; do
-    install_app "$app"
-done
-
-# Install Manual Apps
-install_mcfly
-install_nala
-install_gping
-
-print_summary
-
-# Offer to apply the bundled bashrc
-exit_code=0
-install_bashrc || exit_code=1
-generate_cheatsheet || exit_code=1
-
-if [ ${#failed_apps[@]} -gt 0 ]; then
-    if [ "$IGNORE_FAILURES" = true ]; then
-        log "Warning: ${#failed_apps[@]} step(s) failed; ignoring due to --ignore-failures."
-    else
-        exit_code=1
+    if [ "$exit_code" -ne 0 ]; then
+        echo -e "\nOne or more steps failed. See $LOG_FILE for details." >&2
     fi
-fi
 
-if [ "$exit_code" -ne 0 ]; then
-    echo -e "\nOne or more steps failed. See $LOG_FILE for details." >&2
-fi
+    exit "$exit_code"
+}
 
-exit "$exit_code"
+if [ "${BASH_SOURCE[0]}" = "$0" ]; then
+    main "$@"
+fi
